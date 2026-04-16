@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="180" height="180" viewBox="0 0 180 180" role="img" aria-labelledby="title desc">
+  <title id="title">Rider Hub Apple Touch Icon</title>
+  <desc id="desc">Icono simple para agregar Rider Hub a la pantalla de inicio.</desc>
+  <rect width="180" height="180" rx="44" fill="#0b1020"/>
+  <rect x="12" y="12" width="156" height="156" rx="38" fill="#11192d" stroke="#273756" stroke-width="3"/>
+  <circle cx="131" cy="131" r="24" fill="none" stroke="#56d0a0" stroke-width="10"/>
+  <path d="M52 131V49h35c20 0 32 10 32 28 0 12-6 21-17 26l22 28h-22l-19-22H74v22H52zm22-40h14c8 0 13-4 13-12s-5-12-13-12H74v24z" fill="#f4f7fb"/>
+</svg>

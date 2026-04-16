@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="512" height="512" viewBox="0 0 512 512" role="img" aria-labelledby="title desc">
+  <title id="title">Rider Hub 512</title>
+  <desc id="desc">Icono vectorial 512 por 512 para Rider Hub.</desc>
+  <rect width="512" height="512" rx="128" fill="#0b1020"/>
+  <rect x="38" y="38" width="436" height="436" rx="108" fill="#11192d" stroke="#273756" stroke-width="8"/>
+  <circle cx="372" cy="372" r="74" fill="none" stroke="#56d0a0" stroke-width="28"/>
+  <path d="M146 375V136h104c63 0 99 31 99 82 0 37-18 63-51 78l69 79h-65l-56-65h-36v65H146zm64-117h42c26 0 40-13 40-35 0-23-14-35-40-35h-42v70z" fill="#f4f7fb"/>
+</svg>

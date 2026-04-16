@@ -1,0 +1,276 @@
+<!doctype html>
+<html lang="es">
+  <head>
+    <meta charset="utf-8">
+    <meta
+      name="viewport"
+      content="width=device-width, initial-scale=1, viewport-fit=cover"
+    >
+    <meta name="theme-color" content="#0b1020">
+    <meta name="mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+    <meta name="apple-mobile-web-app-title" content="Rider Hub">
+    <meta
+      name="description"
+      content="Web app/PWA para riders: abrir direcciones en Google Maps, registrar pedidos y ver resúmenes operativos."
+    >
+    <title>Rider Hub</title>
+    <link rel="icon" href="icons/icon.svg" type="image/svg+xml">
+    <link rel="icon" href="icons/icon-192.png" sizes="192x192" type="image/png">
+    <link rel="apple-touch-icon" href="icons/apple-touch-icon.png" sizes="180x180">
+    <link rel="manifest" href="manifest.webmanifest">
+    <link rel="stylesheet" href="styles.css">
+  </head>
+  <body>
+    <div class="app-shell">
+      <header class="topbar">
+        <div>
+          <p class="eyebrow">Operativa diaria</p>
+          <h1>Rider Hub</h1>
+        </div>
+        <span class="engine-pill" id="engine-pill" aria-label="Engine activo">Engine: none</span>
+      </header>
+
+      <main class="content" id="app-content">
+        <section class="view is-active" id="view-inicio" aria-labelledby="tab-inicio">
+          <article class="card hero-card">
+            <div class="hero-copy">
+              <p class="section-kicker">Pedido → Maps</p>
+              <h2>Abrí una dirección en segundos</h2>
+              <p class="supporting-text">
+                Copiá la dirección desde tu app de pedidos, leela desde el portapapeles y abrí
+                Google Maps directamente en modo bicicleta.
+              </p>
+            </div>
+
+            <div class="stack">
+              <button class="button button-primary button-large" id="clipboard-open-button" type="button">
+                Leer portapapeles y abrir Maps
+              </button>
+              <button class="button button-secondary" id="reopen-last-button" type="button">
+                Reabrir última
+              </button>
+            </div>
+
+            <div class="field">
+              <label for="address-input">Dirección del pedido</label>
+              <textarea
+                id="address-input"
+                class="input input-area"
+                rows="4"
+                placeholder="Pegá acá la dirección si el portapapeles no se puede leer..."
+                autocomplete="street-address"
+                spellcheck="false"
+              ></textarea>
+            </div>
+
+            <button class="button button-primary" id="open-maps-button" type="button">
+              Abrir en Google Maps
+            </button>
+
+            <p class="inline-status" id="map-status" role="status" aria-live="polite">
+              Listo para abrir tu próximo pedido.
+            </p>
+          </article>
+
+          <article class="card">
+            <div class="section-head">
+              <div>
+                <p class="section-kicker">Accesos rápidos</p>
+                <h2>Historial reciente</h2>
+              </div>
+              <span class="muted-text">Últimas 10 direcciones</span>
+            </div>
+            <div class="history-list" id="history-list" aria-live="polite"></div>
+          </article>
+        </section>
+
+        <section class="view" id="view-registrar" aria-labelledby="tab-registrar" hidden>
+          <article class="card">
+            <div class="section-head">
+              <div>
+                <p class="section-kicker">Registro manual</p>
+                <h2>Guardar pedido</h2>
+              </div>
+              <span class="muted-text">Persistencia local</span>
+            </div>
+
+            <form id="order-form" novalidate>
+              <div class="field-grid">
+                <div class="field">
+                  <label for="amount">Monto</label>
+                  <input
+                    id="amount"
+                    name="amount"
+                    class="input"
+                    type="number"
+                    inputmode="decimal"
+                    min="0.01"
+                    step="0.01"
+                    placeholder="0"
+                    required
+                  >
+                </div>
+
+                <div class="field">
+                  <label for="payment-method">Forma de cobro</label>
+                  <select id="payment-method" name="paymentMethod" class="input" required>
+                    <option value="efectivo">Efectivo</option>
+                    <option value="transferencia">Transferencia</option>
+                  </select>
+                </div>
+
+                <div class="field">
+                  <label for="estimated-km">Km estimados</label>
+                  <input
+                    id="estimated-km"
+                    name="estimatedKm"
+                    class="input"
+                    type="number"
+                    inputmode="decimal"
+                    min="0"
+                    step="0.1"
+                    placeholder="0"
+                  >
+                </div>
+
+                <div class="field">
+                  <label for="estimated-minutes">Minutos estimados</label>
+                  <input
+                    id="estimated-minutes"
+                    name="estimatedMinutes"
+                    class="input"
+                    type="number"
+                    inputmode="numeric"
+                    min="0"
+                    step="1"
+                    placeholder="0"
+                  >
+                </div>
+
+                <div class="field">
+                  <label for="zone">Zona</label>
+                  <input
+                    id="zone"
+                    name="zone"
+                    class="input"
+                    type="text"
+                    maxlength="60"
+                    placeholder="Centro, Palermo, Recoleta..."
+                    autocomplete="off"
+                  >
+                </div>
+
+                <div class="field">
+                  <label for="order-datetime">Fecha y hora</label>
+                  <input
+                    id="order-datetime"
+                    name="orderDateTime"
+                    class="input"
+                    type="datetime-local"
+                    required
+                  >
+                </div>
+              </div>
+
+              <div class="field">
+                <label for="notes">Observaciones</label>
+                <textarea
+                  id="notes"
+                  name="notes"
+                  class="input input-area"
+                  rows="4"
+                  maxlength="240"
+                  placeholder="Datos útiles del pedido, edificio, timbre, demora, etc."
+                ></textarea>
+              </div>
+
+              <div class="stack">
+                <button class="button button-primary" type="submit">Guardar pedido</button>
+                <p class="inline-status" id="order-status" role="status" aria-live="polite">
+                  Completá los datos y guardá el pedido cuando cierres el viaje.
+                </p>
+              </div>
+            </form>
+          </article>
+        </section>
+
+        <section class="view" id="view-resumen" aria-labelledby="tab-resumen" hidden>
+          <article class="card">
+            <div class="section-head">
+              <div>
+                <p class="section-kicker">Resumen operativo</p>
+                <h2>Tu rendimiento de hoy</h2>
+              </div>
+              <span class="muted-text" id="summary-range">Semana actual</span>
+            </div>
+
+            <div class="summary-grid" id="summary-grid">
+              <article class="stat-card">
+                <span>Total del día</span>
+                <strong id="stat-day-total">$ 0</strong>
+              </article>
+              <article class="stat-card">
+                <span>Pedidos del día</span>
+                <strong id="stat-day-count">0</strong>
+              </article>
+              <article class="stat-card">
+                <span>Promedio por pedido</span>
+                <strong id="stat-day-average">$ 0</strong>
+              </article>
+              <article class="stat-card">
+                <span>Total efectivo</span>
+                <strong id="stat-day-cash">$ 0</strong>
+              </article>
+              <article class="stat-card">
+                <span>Total transferencia</span>
+                <strong id="stat-day-transfer">$ 0</strong>
+              </article>
+              <article class="stat-card">
+                <span>Total semanal</span>
+                <strong id="stat-week-total">$ 0</strong>
+              </article>
+              <article class="stat-card stat-card-wide">
+                <span>Ganancia por hora aprox.</span>
+                <strong id="stat-hourly">$ 0</strong>
+              </article>
+            </div>
+          </article>
+
+          <article class="card">
+            <div class="section-head">
+              <div>
+                <p class="section-kicker">Últimos registros</p>
+                <h2>Pedidos recientes</h2>
+              </div>
+              <span class="muted-text">Ordenados del más nuevo al más viejo</span>
+            </div>
+            <div class="order-list" id="recent-orders" aria-live="polite"></div>
+          </article>
+        </section>
+      </main>
+
+      <nav class="bottom-nav" aria-label="Secciones principales">
+        <button class="nav-button is-active" id="tab-inicio" type="button" data-view="inicio" aria-current="page">
+          Inicio
+        </button>
+        <button class="nav-button" id="tab-registrar" type="button" data-view="registrar">
+          Registrar
+        </button>
+        <button class="nav-button" id="tab-resumen" type="button" data-view="resumen">
+          Resumen
+        </button>
+      </nav>
+    </div>
+
+    <div class="toast-stack" id="toast-stack" aria-live="polite" aria-atomic="true"></div>
+    <noscript>
+      <div class="noscript-banner">
+        Rider Hub necesita JavaScript habilitado para abrir Maps, guardar pedidos y mostrar resúmenes.
+      </div>
+    </noscript>
+
+    <script type="module" src="app.js"></script>
+  </body>
+</html>

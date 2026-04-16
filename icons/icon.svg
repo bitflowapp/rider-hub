@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" role="img" aria-labelledby="title desc">
+  <title id="title">Rider Hub</title>
+  <desc id="desc">Icono simple con una R y una rueda para la app Rider Hub.</desc>
+  <rect width="128" height="128" rx="32" fill="#0b1020"/>
+  <rect x="10" y="10" width="108" height="108" rx="26" fill="#11192d" stroke="#273756" stroke-width="2"/>
+  <circle cx="93" cy="93" r="18" fill="none" stroke="#56d0a0" stroke-width="8"/>
+  <path d="M38 92V36h25c15 0 24 8 24 20 0 9-5 15-13 18l16 18H75L62 77H53v15H38zm15-27h10c6 0 10-3 10-9s-4-9-10-9H53v18z" fill="#f4f7fb"/>
+</svg>
