@@ -6,14 +6,14 @@
       name="viewport"
       content="width=device-width, initial-scale=1, viewport-fit=cover"
     >
-    <meta name="theme-color" content="#0b1020">
+    <meta name="theme-color" content="#090a0d">
     <meta name="mobile-web-app-capable" content="yes">
     <meta name="apple-mobile-web-app-capable" content="yes">
     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
     <meta name="apple-mobile-web-app-title" content="Rider Hub">
     <meta
       name="description"
-      content="Web app/PWA para riders: abrir direcciones en Google Maps, registrar pedidos y ver resúmenes operativos."
+      content="PWA para riders en Neuquén Capital: abrir direcciones validadas en Google Maps, registrar efectivo y exportar reportes."
     >
     <title>Rider Hub</title>
     <link rel="icon" href="icons/icon.svg" type="image/svg+xml">
@@ -25,27 +25,29 @@
   <body>
     <div class="app-shell">
       <header class="topbar">
-        <div>
-          <p class="eyebrow">Operativa diaria</p>
+        <div class="title-block">
+          <p class="eyebrow">Neuquén Capital</p>
           <h1>Rider Hub</h1>
+          <p class="hero-supporting">
+            Maps rápido, efectivo simple y exportación real. Nada más.
+          </p>
         </div>
-        <span class="engine-pill" id="engine-pill" aria-label="Engine activo">Engine: none</span>
       </header>
 
-      <main class="content" id="app-content">
-        <section class="view is-active" id="view-inicio" aria-labelledby="tab-inicio">
-          <article class="card hero-card">
-            <div class="hero-copy">
-              <p class="section-kicker">Pedido → Maps</p>
-              <h2>Abrí una dirección en segundos</h2>
+      <main class="content">
+        <section class="view is-active" id="view-maps" aria-labelledby="tab-maps">
+          <article class="panel panel-hero">
+            <div class="section-copy">
+              <p class="section-kicker">Maps</p>
+              <h2>Abrí solo direcciones de Neuquén Capital</h2>
               <p class="supporting-text">
-                Copiá la dirección desde tu app de pedidos, leela desde el portapapeles y abrí
-                Google Maps directamente en modo bicicleta.
+                Si la dirección no especifica ciudad, Rider Hub asume Neuquén Capital. Si parece
+                ser otra localidad, bloquea la apertura para evitar errores en la calle.
               </p>
             </div>
 
-            <div class="stack">
-              <button class="button button-primary button-large" id="clipboard-open-button" type="button">
+            <div class="action-row">
+              <button class="button button-primary" id="clipboard-open-button" type="button">
                 Leer portapapeles y abrir Maps
               </button>
               <button class="button button-secondary" id="reopen-last-button" type="button">
@@ -54,54 +56,54 @@
             </div>
 
             <div class="field">
-              <label for="address-input">Dirección del pedido</label>
+              <label for="address-input">Dirección</label>
               <textarea
                 id="address-input"
                 class="input input-area"
                 rows="4"
-                placeholder="Pegá acá la dirección si el portapapeles no se puede leer..."
+                placeholder="Ej.: Mendoza 850"
                 autocomplete="street-address"
                 spellcheck="false"
               ></textarea>
             </div>
 
-            <button class="button button-primary" id="open-maps-button" type="button">
+            <button class="button button-primary button-large" id="open-maps-button" type="button">
               Abrir en Google Maps
             </button>
 
             <p class="inline-status" id="map-status" role="status" aria-live="polite">
-              Listo para abrir tu próximo pedido.
+              Listo para abrir un pedido dentro de Neuquén Capital.
             </p>
           </article>
 
-          <article class="card">
+          <article class="panel panel-list">
             <div class="section-head">
               <div>
-                <p class="section-kicker">Accesos rápidos</p>
-                <h2>Historial reciente</h2>
+                <p class="section-kicker">Historial</p>
+                <h2>Direcciones recientes</h2>
               </div>
-              <span class="muted-text">Últimas 10 direcciones</span>
+              <span class="muted-text">Últimas 10 aperturas</span>
             </div>
             <div class="history-list" id="history-list" aria-live="polite"></div>
           </article>
         </section>
 
-        <section class="view" id="view-registrar" aria-labelledby="tab-registrar" hidden>
-          <article class="card">
+        <section class="view" id="view-efectivo" aria-labelledby="tab-efectivo" hidden>
+          <article class="panel panel-form">
             <div class="section-head">
               <div>
-                <p class="section-kicker">Registro manual</p>
-                <h2>Guardar pedido</h2>
+                <p class="section-kicker">Efectivo</p>
+                <h2>Registrar cobro rápido</h2>
               </div>
-              <span class="muted-text">Persistencia local</span>
+              <span class="muted-text">Operación con una mano</span>
             </div>
 
-            <form id="order-form" novalidate>
-              <div class="field-grid">
+            <form id="cash-form" novalidate>
+              <div class="field-grid compact-grid">
                 <div class="field">
-                  <label for="amount">Monto</label>
+                  <label for="cash-amount">Monto en efectivo</label>
                   <input
-                    id="amount"
+                    id="cash-amount"
                     name="amount"
                     class="input"
                     type="number"
@@ -114,59 +116,10 @@
                 </div>
 
                 <div class="field">
-                  <label for="payment-method">Forma de cobro</label>
-                  <select id="payment-method" name="paymentMethod" class="input" required>
-                    <option value="efectivo">Efectivo</option>
-                    <option value="transferencia">Transferencia</option>
-                  </select>
-                </div>
-
-                <div class="field">
-                  <label for="estimated-km">Km estimados</label>
+                  <label for="cash-datetime">Fecha y hora</label>
                   <input
-                    id="estimated-km"
-                    name="estimatedKm"
-                    class="input"
-                    type="number"
-                    inputmode="decimal"
-                    min="0"
-                    step="0.1"
-                    placeholder="0"
-                  >
-                </div>
-
-                <div class="field">
-                  <label for="estimated-minutes">Minutos estimados</label>
-                  <input
-                    id="estimated-minutes"
-                    name="estimatedMinutes"
-                    class="input"
-                    type="number"
-                    inputmode="numeric"
-                    min="0"
-                    step="1"
-                    placeholder="0"
-                  >
-                </div>
-
-                <div class="field">
-                  <label for="zone">Zona</label>
-                  <input
-                    id="zone"
-                    name="zone"
-                    class="input"
-                    type="text"
-                    maxlength="60"
-                    placeholder="Centro, Palermo, Recoleta..."
-                    autocomplete="off"
-                  >
-                </div>
-
-                <div class="field">
-                  <label for="order-datetime">Fecha y hora</label>
-                  <input
-                    id="order-datetime"
-                    name="orderDateTime"
+                    id="cash-datetime"
+                    name="createdAt"
                     class="input"
                     type="datetime-local"
                     required
@@ -175,112 +128,114 @@
               </div>
 
               <div class="field">
-                <label for="notes">Observaciones</label>
+                <div class="field-label-row">
+                  <label for="cash-address">Dirección asociada</label>
+                  <button class="mini-action" id="use-last-address-button" type="button">
+                    Usar última
+                  </button>
+                </div>
+                <input
+                  id="cash-address"
+                  name="address"
+                  class="input"
+                  type="text"
+                  list="address-suggestions"
+                  placeholder="Opcional"
+                  autocomplete="off"
+                >
+                <datalist id="address-suggestions"></datalist>
+              </div>
+
+              <div class="field">
+                <label for="cash-notes">Observación</label>
                 <textarea
-                  id="notes"
+                  id="cash-notes"
                   name="notes"
-                  class="input input-area"
-                  rows="4"
-                  maxlength="240"
-                  placeholder="Datos útiles del pedido, edificio, timbre, demora, etc."
+                  class="input input-area input-area-small"
+                  rows="3"
+                  maxlength="220"
+                  placeholder="Opcional"
                 ></textarea>
               </div>
 
-              <div class="stack">
-                <button class="button button-primary" type="submit">Guardar pedido</button>
-                <p class="inline-status" id="order-status" role="status" aria-live="polite">
-                  Completá los datos y guardá el pedido cuando cierres el viaje.
-                </p>
+              <div class="action-row">
+                <button class="button button-primary" type="submit">Guardar efectivo</button>
               </div>
+
+              <p class="inline-status" id="cash-status" role="status" aria-live="polite">
+                Guardá un registro corto cada vez que cobres efectivo.
+              </p>
             </form>
           </article>
-        </section>
 
-        <section class="view" id="view-resumen" aria-labelledby="tab-resumen" hidden>
-          <article class="card">
+          <article class="panel panel-list">
             <div class="section-head">
               <div>
-                <p class="section-kicker">Resumen operativo</p>
-                <h2>Tu rendimiento de hoy</h2>
+                <p class="section-kicker">Resumen</p>
+                <h2>Efectivo del día</h2>
               </div>
-              <span class="muted-text" id="summary-range">Semana actual</span>
+              <span class="muted-text" id="cash-summary-range">Semana actual</span>
             </div>
 
-            <div class="summary-grid" id="summary-grid">
+            <div class="summary-grid simple-summary">
               <article class="stat-card">
                 <span>Total del día</span>
                 <strong id="stat-day-total">$ 0</strong>
               </article>
               <article class="stat-card">
-                <span>Pedidos del día</span>
+                <span>Registros del día</span>
                 <strong id="stat-day-count">0</strong>
               </article>
-              <article class="stat-card">
-                <span>Promedio por pedido</span>
-                <strong id="stat-day-average">$ 0</strong>
-              </article>
-              <article class="stat-card">
-                <span>Total efectivo</span>
-                <strong id="stat-day-cash">$ 0</strong>
-              </article>
-              <article class="stat-card">
-                <span>Total transferencia</span>
-                <strong id="stat-day-transfer">$ 0</strong>
-              </article>
-              <article class="stat-card">
+              <article class="stat-card stat-card-wide">
                 <span>Total semanal</span>
                 <strong id="stat-week-total">$ 0</strong>
               </article>
-              <article class="stat-card stat-card-wide">
-                <span>Ganancia por hora aprox.</span>
-                <strong id="stat-hourly">$ 0</strong>
-              </article>
             </div>
-          </article>
 
-          <article class="card">
-            <div class="section-head">
-              <div>
-                <p class="section-kicker">Últimos registros</p>
-                <h2>Pedidos recientes</h2>
-              </div>
-              <span class="muted-text">Ordenados del más nuevo al más viejo</span>
+            <div class="export-bar">
+              <button class="button button-secondary" id="export-pdf-button" type="button">
+                Exportar PDF
+              </button>
+              <button class="button button-secondary" id="export-excel-button" type="button">
+                Exportar Excel
+              </button>
             </div>
-            <div class="order-list" id="recent-orders" aria-live="polite"></div>
+
+            <p class="inline-status" id="export-status" role="status" aria-live="polite">
+              Exportá los registros cuando necesites cerrar caja o compartir un resumen.
+            </p>
+
+            <div class="section-head section-head-tight">
+              <div>
+                <p class="section-kicker">Recientes</p>
+                <h2>Últimos registros</h2>
+              </div>
+            </div>
+            <div class="entry-list" id="cash-list" aria-live="polite"></div>
           </article>
         </section>
       </main>
 
       <nav class="bottom-nav" aria-label="Secciones principales">
-        <button class="nav-button is-active" id="tab-inicio" type="button" data-view="inicio" aria-current="page">
+        <button class="nav-button is-active" id="tab-maps" type="button" data-view="maps" aria-current="page">
           <span class="nav-icon" aria-hidden="true">
             <svg viewBox="0 0 24 24" focusable="false">
-              <path d="M4 10.5 12 4l8 6.5" />
-              <path d="M6.75 9.75V20h10.5V9.75" />
+              <path d="M8.25 18.5 5 5.5l5.6 2.1 4.8-2.1 3.6 13-5-2.05Z" />
+              <path d="M10.6 7.6v11.6" />
+              <path d="M15.4 5.5v11" />
             </svg>
           </span>
-          <span class="nav-label">Inicio</span>
+          <span class="nav-label">Maps</span>
         </button>
-        <button class="nav-button" id="tab-registrar" type="button" data-view="registrar">
+        <button class="nav-button" id="tab-efectivo" type="button" data-view="efectivo">
           <span class="nav-icon" aria-hidden="true">
             <svg viewBox="0 0 24 24" focusable="false">
-              <path d="M12 5v14" />
-              <path d="M5 12h14" />
-              <rect x="4.75" y="4.75" width="14.5" height="14.5" rx="3.25" />
+              <rect x="3.75" y="6.25" width="16.5" height="11.5" rx="3.25" />
+              <path d="M8 12h8" />
+              <path d="M12 8.75v6.5" />
             </svg>
           </span>
-          <span class="nav-label">Registrar</span>
-        </button>
-        <button class="nav-button" id="tab-resumen" type="button" data-view="resumen">
-          <span class="nav-icon" aria-hidden="true">
-            <svg viewBox="0 0 24 24" focusable="false">
-              <path d="M5 18.5h14" />
-              <path d="M7.5 16v-4.5" />
-              <path d="M12 16V8" />
-              <path d="M16.5 16v-7" />
-            </svg>
-          </span>
-          <span class="nav-label">Resumen</span>
+          <span class="nav-label">Efectivo</span>
         </button>
       </nav>
     </div>
@@ -288,10 +243,14 @@
     <div class="toast-stack" id="toast-stack" aria-live="polite" aria-atomic="true"></div>
     <noscript>
       <div class="noscript-banner">
-        Rider Hub necesita JavaScript habilitado para abrir Maps, guardar pedidos y mostrar resúmenes.
+        Rider Hub necesita JavaScript habilitado para abrir Maps, guardar efectivo y exportar
+        reportes.
       </div>
     </noscript>
 
+    <script src="vendor/jspdf.umd.min.js"></script>
+    <script src="vendor/jspdf.plugin.autotable.min.js"></script>
+    <script src="vendor/xlsx.full.min.js"></script>
     <script type="module" src="app.js"></script>
   </body>
 </html>

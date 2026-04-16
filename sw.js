@@ -1,4 +1,4 @@
-const CACHE_NAME = "rider-hub-v1";
+const CACHE_NAME = "rider-hub-v2";
 const APP_SHELL = [
   "./",
   "./index.html",
@@ -15,6 +15,9 @@ const APP_SHELL = [
   "./icons/icon-192.svg",
   "./icons/icon-512.svg",
   "./icons/apple-touch-icon.svg",
+  "./vendor/jspdf.umd.min.js",
+  "./vendor/jspdf.plugin.autotable.min.js",
+  "./vendor/xlsx.full.min.js",
 ];
 
 self.addEventListener("install", (event) => {

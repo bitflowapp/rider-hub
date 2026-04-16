@@ -1,13 +1,34 @@
-import { analyzeOrder, getActiveEngine, processAddressInput } from "./engine/engine.js";
+import { getActiveEngine, processAddressInput } from "./engine/engine.js";
 
 const STORAGE_KEYS = {
   addressHistory: "riderHub.addressHistory.v1",
-  orders: "riderHub.orders.v1",
+  cashEntries: "riderHub.cashEntries.v2",
+  legacyOrders: "riderHub.orders.v1",
 };
 
 const MAX_HISTORY_ITEMS = 10;
-const EMPTY_SUMMARY = "Sin datos";
-const VIEW_NAMES = ["inicio", "registrar", "resumen"];
+const CANONICAL_CITY = "Neuquén Capital, Neuquén, Argentina";
+const VIEW_NAMES = ["maps", "efectivo"];
+const RECENT_ENTRY_LIMIT = 10;
+const FORBIDDEN_LOCALITIES = [
+  { pattern: /\bcipolletti\b/, label: "Cipolletti" },
+  { pattern: /\bplottier\b/, label: "Plottier" },
+  { pattern: /\bcentenario\b/, label: "Centenario" },
+  { pattern: /\bsenillosa\b/, label: "Senillosa" },
+  { pattern: /\bfernandez oro\b/, label: "Fernández Oro" },
+  { pattern: /\bcontralmirante cordero\b/, label: "Contralmirante Cordero" },
+  { pattern: /\bcinco saltos\b/, label: "Cinco Saltos" },
+  { pattern: /\ballen\b/, label: "Allen" },
+  { pattern: /\bvista alegre\b/, label: "Vista Alegre" },
+  { pattern: /\bel chocon\b/, label: "El Chocón" },
+  { pattern: /\bcutral co\b/, label: "Cutral Co" },
+  { pattern: /\bplaza huincul\b/, label: "Plaza Huincul" },
+  { pattern: /\brio negro\b/, label: "Río Negro" },
+  { pattern: /\bneuquen province\b/, label: "otra referencia fuera de la ciudad" },
+  { pattern: /\bbuenos aires\b/, label: "Buenos Aires" },
+  { pattern: /\bcaba\b/, label: "CABA" },
+  { pattern: /\bcordoba\b/, label: "Córdoba" },
+];
 
 const currencyFormatter = new Intl.NumberFormat("es-AR", {
   minimumFractionDigits: 0,
@@ -27,11 +48,10 @@ const dateFormatter = new Intl.DateTimeFormat("es-AR", {
 
 const state = {
   addressHistory: normalizeAddressHistory(readStorage(STORAGE_KEYS.addressHistory, [])),
-  orders: normalizeOrders(readStorage(STORAGE_KEYS.orders, [])),
+  cashEntries: [],
 };
 
 const elements = {
-  enginePill: document.querySelector("#engine-pill"),
   views: Array.from(document.querySelectorAll(".view")),
   navButtons: Array.from(document.querySelectorAll(".nav-button")),
   addressInput: document.querySelector("#address-input"),
@@ -40,31 +60,36 @@ const elements = {
   reopenLastButton: document.querySelector("#reopen-last-button"),
   historyList: document.querySelector("#history-list"),
   mapStatus: document.querySelector("#map-status"),
-  orderForm: document.querySelector("#order-form"),
-  orderStatus: document.querySelector("#order-status"),
-  orderDateTime: document.querySelector("#order-datetime"),
-  summaryRange: document.querySelector("#summary-range"),
-  recentOrders: document.querySelector("#recent-orders"),
+  cashForm: document.querySelector("#cash-form"),
+  cashAmount: document.querySelector("#cash-amount"),
+  cashDateTime: document.querySelector("#cash-datetime"),
+  cashAddress: document.querySelector("#cash-address"),
+  cashNotes: document.querySelector("#cash-notes"),
+  cashStatus: document.querySelector("#cash-status"),
+  useLastAddressButton: document.querySelector("#use-last-address-button"),
+  addressSuggestions: document.querySelector("#address-suggestions"),
+  summaryRange: document.querySelector("#cash-summary-range"),
   statDayTotal: document.querySelector("#stat-day-total"),
   statDayCount: document.querySelector("#stat-day-count"),
-  statDayAverage: document.querySelector("#stat-day-average"),
-  statDayCash: document.querySelector("#stat-day-cash"),
-  statDayTransfer: document.querySelector("#stat-day-transfer"),
   statWeekTotal: document.querySelector("#stat-week-total"),
-  statHourly: document.querySelector("#stat-hourly"),
+  cashList: document.querySelector("#cash-list"),
+  exportPdfButton: document.querySelector("#export-pdf-button"),
+  exportExcelButton: document.querySelector("#export-excel-button"),
+  exportStatus: document.querySelector("#export-status"),
   toastStack: document.querySelector("#toast-stack"),
 };
 
 init();
 
 function init() {
-  elements.enginePill.textContent = `Engine: ${getActiveEngine()}`;
-  elements.orderDateTime.value = getDateTimeLocalValue();
+  state.cashEntries = loadCashEntries();
+  elements.cashDateTime.value = getDateTimeLocalValue();
 
   bindEvents();
   syncViewFromHash();
   renderHistory();
-  renderSummary();
+  renderAddressSuggestions();
+  renderCashView();
   registerServiceWorker();
 }
 
@@ -81,15 +106,22 @@ function bindEvents() {
     elements.addressInput.value = processAddressInput(elements.addressInput.value);
   });
 
+  elements.cashAddress.addEventListener("blur", () => {
+    elements.cashAddress.value = processAddressInput(elements.cashAddress.value);
+  });
+
   elements.clipboardOpenButton.addEventListener("click", handleClipboardOpen);
   elements.openMapsButton.addEventListener("click", () => openMapsForAddress(elements.addressInput.value));
   elements.reopenLastButton.addEventListener("click", reopenLastAddress);
-  elements.orderForm.addEventListener("submit", handleOrderSubmit);
+  elements.useLastAddressButton.addEventListener("click", applyLastAddressToCashForm);
+  elements.cashForm.addEventListener("submit", handleCashSubmit);
+  elements.exportPdfButton.addEventListener("click", handleExportPdf);
+  elements.exportExcelButton.addEventListener("click", handleExportExcel);
 }
 
 function syncViewFromHash() {
   const hash = window.location.hash.replace("#", "").toLowerCase();
-  const activeView = VIEW_NAMES.includes(hash) ? hash : "inicio";
+  const activeView = VIEW_NAMES.includes(hash) ? hash : "maps";
 
   elements.views.forEach((view) => {
     const isActive = view.id === `view-${activeView}`;
@@ -108,8 +140,8 @@ function syncViewFromHash() {
     }
   });
 
-  if (activeView === "resumen") {
-    renderSummary();
+  if (activeView === "efectivo") {
+    renderCashView();
   }
 }
 
@@ -144,45 +176,64 @@ async function handleClipboardOpen() {
   }
 }
 
-function openMapsForAddress(inputText) {
-  const cleanedAddress = processAddressInput(inputText);
+function openMapsForAddress(rawText) {
+  const result = buildNeuqenDestination(rawText);
 
-  if (!cleanedAddress) {
-    setInlineStatus(elements.mapStatus, "No hay una dirección para abrir.", "warning");
-    showToast("Ingresá o pegá una dirección antes de abrir Maps.", "warning");
+  if (!result.ok) {
+    setInlineStatus(elements.mapStatus, result.reason, "danger");
+    showToast(result.reason, "danger");
     elements.addressInput.focus();
-    return;
+    return false;
   }
 
-  elements.addressInput.value = cleanedAddress;
+  elements.addressInput.value = result.label;
+  pushAddressToHistory(result.destination);
+  renderHistory();
+  renderAddressSuggestions();
+  syncCashAddressWithLastOpened();
 
   const mapsUrl =
     "https://www.google.com/maps/dir/?api=1&destination=" +
-    encodeURIComponent(cleanedAddress) +
+    encodeURIComponent(result.destination) +
     "&travelmode=bicycling";
 
-  pushAddressToHistory(cleanedAddress);
-  renderHistory();
   setInlineStatus(elements.mapStatus, "Abriendo Google Maps en modo bicicleta...", "success");
-  showToast("Google Maps abierto en modo bicicleta.", "success");
+  showToast("Google Maps abierto para Neuquén Capital.", "success");
 
   const externalWindow = window.open(mapsUrl, "_blank", "noopener,noreferrer");
 
   if (!externalWindow) {
     window.location.assign(mapsUrl);
   }
+
+  return true;
 }
 
 function reopenLastAddress() {
   const [lastAddress] = state.addressHistory;
 
   if (!lastAddress) {
-    setInlineStatus(elements.mapStatus, "Todavía no abriste ninguna dirección.", "warning");
-    showToast("No hay una dirección previa para reabrir.", "warning");
+    const message = "Todavía no abriste ninguna dirección.";
+    setInlineStatus(elements.mapStatus, message, "warning");
+    showToast(message, "warning");
     return;
   }
 
   openMapsForAddress(lastAddress.address);
+}
+
+function applyLastAddressToCashForm() {
+  const [lastAddress] = state.addressHistory;
+
+  if (!lastAddress) {
+    const message = "Todavía no hay una dirección reciente para reutilizar.";
+    setInlineStatus(elements.cashStatus, message, "warning");
+    showToast(message, "warning");
+    return;
+  }
+
+  elements.cashAddress.value = lastAddress.address;
+  elements.cashAddress.focus();
 }
 
 function pushAddressToHistory(address) {
@@ -205,7 +256,7 @@ function renderHistory() {
   if (!state.addressHistory.length) {
     elements.historyList.append(
       createEmptyState(
-        "Todavía no abriste direcciones. Cuando uses Maps desde Rider Hub, van a aparecer acá."
+        "Todavía no abriste direcciones. Cuando uses Maps desde Rider Hub, las vas a tener acá."
       )
     );
     return;
@@ -221,7 +272,7 @@ function renderHistory() {
     button.addEventListener("click", () => openMapsForAddress(item.address));
 
     content.className = "history-address";
-    content.textContent = item.address;
+    content.textContent = compactAddress(item.address);
 
     timestamp.className = "history-time";
     timestamp.textContent = dateTimeFormatter.format(new Date(item.openedAt));
@@ -231,184 +282,458 @@ function renderHistory() {
   });
 }
 
-function handleOrderSubmit(event) {
-  event.preventDefault();
+function renderAddressSuggestions() {
+  elements.addressSuggestions.replaceChildren();
 
-  const formData = new FormData(elements.orderForm);
-  const amount = parseNumber(formData.get("amount"), { required: true, allowZero: false });
-  const estimatedKm = parseNumber(formData.get("estimatedKm"));
-  const estimatedMinutes = parseNumber(formData.get("estimatedMinutes"));
-  const paymentMethod = sanitizeText(formData.get("paymentMethod"));
-  const zone = sanitizeText(formData.get("zone"));
-  const notes = sanitizeText(formData.get("notes"));
-  const orderDateTime = sanitizeText(formData.get("orderDateTime"));
-
-  if (amount == null || amount === false) {
-    setInlineStatus(elements.orderStatus, "Ingresá un monto válido mayor a cero.", "danger");
-    showToast("Revisá el monto del pedido.", "danger");
-    elements.orderForm.querySelector("#amount").focus();
-    return;
-  }
-
-  if (estimatedKm === false) {
-    setInlineStatus(elements.orderStatus, "Los kilómetros deben ser un número válido.", "danger");
-    showToast("Revisá los kilómetros estimados.", "danger");
-    elements.orderForm.querySelector("#estimated-km").focus();
-    return;
-  }
-
-  if (estimatedMinutes === false) {
-    setInlineStatus(elements.orderStatus, "Los minutos deben ser un número válido.", "danger");
-    showToast("Revisá los minutos estimados.", "danger");
-    elements.orderForm.querySelector("#estimated-minutes").focus();
-    return;
-  }
-
-  if (!["efectivo", "transferencia"].includes(paymentMethod)) {
-    setInlineStatus(elements.orderStatus, "Elegí una forma de cobro válida.", "danger");
-    showToast("Seleccioná una forma de cobro.", "danger");
-    elements.orderForm.querySelector("#payment-method").focus();
-    return;
-  }
-
-  if (!orderDateTime) {
-    setInlineStatus(elements.orderStatus, "La fecha y hora son obligatorias.", "danger");
-    showToast("Completá la fecha y hora del pedido.", "danger");
-    elements.orderForm.querySelector("#order-datetime").focus();
-    return;
-  }
-
-  const createdAt = new Date(orderDateTime);
-
-  if (Number.isNaN(createdAt.getTime())) {
-    setInlineStatus(elements.orderStatus, "La fecha y hora no tienen un formato válido.", "danger");
-    showToast("La fecha y hora no son válidas.", "danger");
-    elements.orderForm.querySelector("#order-datetime").focus();
-    return;
-  }
-
-  const order = {
-    id: `order-${createdAt.getTime()}-${Math.random().toString(16).slice(2, 8)}`,
-    amount,
-    estimatedKm: estimatedKm === false ? null : estimatedKm,
-    estimatedMinutes: estimatedMinutes === false ? null : estimatedMinutes,
-    zone,
-    paymentMethod,
-    notes,
-    createdAt: createdAt.toISOString(),
-  };
-
-  const analysis = analyzeOrder(order);
-
-  if (analysis && typeof analysis === "object" && Object.keys(analysis).length > 0) {
-    order.analysis = analysis;
-  }
-
-  state.orders = sortOrdersDescending([order, ...state.orders]);
-  writeStorage(STORAGE_KEYS.orders, state.orders);
-
-  elements.orderForm.reset();
-  elements.orderDateTime.value = getDateTimeLocalValue();
-  setInlineStatus(elements.orderStatus, "Pedido guardado correctamente.", "success");
-  showToast("Pedido guardado en el registro local.", "success");
-  renderSummary();
+  state.addressHistory.forEach((item) => {
+    const option = document.createElement("option");
+    option.value = item.address;
+    elements.addressSuggestions.append(option);
+  });
 }
 
-function renderSummary() {
+function syncCashAddressWithLastOpened() {
+  const [lastAddress] = state.addressHistory;
+
+  if (!lastAddress || processAddressInput(elements.cashAddress.value)) {
+    return;
+  }
+
+  elements.cashAddress.value = lastAddress.address;
+}
+
+function handleCashSubmit(event) {
+  event.preventDefault();
+
+  const formData = new FormData(elements.cashForm);
+  const amount = parseNumber(formData.get("amount"), { required: true, allowZero: false });
+  const createdAtValue = processAddressInput(formData.get("createdAt"));
+  const notes = processAddressInput(formData.get("notes"));
+  const rawAddress = processAddressInput(formData.get("address"));
+
+  if (amount == null || amount === false) {
+    const message = "Ingresá un monto válido mayor a cero.";
+    setInlineStatus(elements.cashStatus, message, "danger");
+    showToast(message, "danger");
+    elements.cashAmount.focus();
+    return;
+  }
+
+  if (!createdAtValue) {
+    const message = "La fecha y hora son obligatorias.";
+    setInlineStatus(elements.cashStatus, message, "danger");
+    showToast(message, "danger");
+    elements.cashDateTime.focus();
+    return;
+  }
+
+  const createdAt = new Date(createdAtValue);
+
+  if (Number.isNaN(createdAt.getTime())) {
+    const message = "La fecha y hora no son válidas.";
+    setInlineStatus(elements.cashStatus, message, "danger");
+    showToast(message, "danger");
+    elements.cashDateTime.focus();
+    return;
+  }
+
+  let address = "";
+
+  if (rawAddress) {
+    const addressResult = buildNeuqenDestination(rawAddress);
+
+    if (!addressResult.ok) {
+      setInlineStatus(elements.cashStatus, addressResult.reason, "danger");
+      showToast(addressResult.reason, "danger");
+      elements.cashAddress.focus();
+      return;
+    }
+
+    address = addressResult.destination;
+  }
+
+  const entry = {
+    id: `cash-${createdAt.getTime()}-${Math.random().toString(16).slice(2, 8)}`,
+    amount,
+    createdAt: createdAt.toISOString(),
+    notes,
+    address,
+  };
+
+  state.cashEntries = sortEntriesDescending([entry, ...state.cashEntries]);
+  writeStorage(STORAGE_KEYS.cashEntries, state.cashEntries);
+
+  if (address) {
+    pushAddressToHistory(address);
+    renderHistory();
+    renderAddressSuggestions();
+  }
+
+  elements.cashForm.reset();
+  elements.cashDateTime.value = getDateTimeLocalValue();
+  syncCashAddressWithLastOpened();
+
+  const message = "Registro de efectivo guardado.";
+  setInlineStatus(elements.cashStatus, message, "success");
+  showToast(message, "success");
+  renderCashView();
+}
+
+function renderCashView() {
   const now = new Date();
   const dayStart = startOfDay(now);
   const dayEnd = addDays(dayStart, 1);
   const weekStart = getWeekStart(now);
   const weekEnd = addDays(weekStart, 7);
 
-  const dayOrders = state.orders.filter((order) => isWithinRange(order.createdAt, dayStart, dayEnd));
-  const weekOrders = state.orders.filter((order) => isWithinRange(order.createdAt, weekStart, weekEnd));
+  const dayEntries = state.cashEntries.filter((entry) => isWithinRange(entry.createdAt, dayStart, dayEnd));
+  const weekEntries = state.cashEntries.filter((entry) => isWithinRange(entry.createdAt, weekStart, weekEnd));
 
-  const dayTotal = sumBy(dayOrders, (order) => order.amount);
-  const dayCount = dayOrders.length;
-  const dayAverage = dayCount ? dayTotal / dayCount : 0;
-  const dayCash = sumBy(dayOrders, (order) =>
-    order.paymentMethod === "efectivo" ? order.amount : 0
-  );
-  const dayTransfer = sumBy(dayOrders, (order) =>
-    order.paymentMethod === "transferencia" ? order.amount : 0
-  );
-  const weekTotal = sumBy(weekOrders, (order) => order.amount);
-  const totalDayMinutes = sumBy(dayOrders, (order) => order.estimatedMinutes || 0);
-  const hourlyRate = totalDayMinutes > 0 ? dayTotal / (totalDayMinutes / 60) : null;
-
-  elements.statDayTotal.textContent = formatMoney(dayTotal);
-  elements.statDayCount.textContent = String(dayCount);
-  elements.statDayAverage.textContent = formatMoney(dayAverage);
-  elements.statDayCash.textContent = formatMoney(dayCash);
-  elements.statDayTransfer.textContent = formatMoney(dayTransfer);
-  elements.statWeekTotal.textContent = formatMoney(weekTotal);
-  elements.statHourly.textContent = hourlyRate == null ? EMPTY_SUMMARY : formatMoney(hourlyRate);
+  elements.statDayTotal.textContent = formatMoney(sumBy(dayEntries, (entry) => entry.amount));
+  elements.statDayCount.textContent = String(dayEntries.length);
+  elements.statWeekTotal.textContent = formatMoney(sumBy(weekEntries, (entry) => entry.amount));
   elements.summaryRange.textContent =
     `Semana actual · ${dateFormatter.format(weekStart)} al ${dateFormatter.format(addDays(weekEnd, -1))}`;
 
-  renderRecentOrders();
+  renderCashList();
 }
 
-function renderRecentOrders() {
-  elements.recentOrders.replaceChildren();
+function renderCashList() {
+  elements.cashList.replaceChildren();
 
-  if (!state.orders.length) {
-    elements.recentOrders.append(
+  if (!state.cashEntries.length) {
+    elements.cashList.append(
       createEmptyState(
-        "Todavía no guardaste pedidos. Empezá desde Registrar para construir tu resumen del día y de la semana."
+        "Todavía no guardaste efectivo. Registrá un cobro y vas a verlo enseguida en este resumen."
       )
     );
     return;
   }
 
-  state.orders.slice(0, 8).forEach((order) => {
+  state.cashEntries.slice(0, RECENT_ENTRY_LIMIT).forEach((entry) => {
     const item = document.createElement("article");
     const topLine = document.createElement("div");
     const amount = document.createElement("span");
-    const badge = document.createElement("span");
     const meta = document.createElement("p");
-    const details = document.createElement("p");
+    const address = document.createElement("p");
     const notes = document.createElement("p");
 
-    item.className = "order-item";
-    topLine.className = "order-topline";
-    amount.className = "order-amount";
-    badge.className = "order-badge";
-    meta.className = "order-meta";
-    details.className = "order-meta";
-    notes.className = "order-notes";
+    item.className = "entry-item";
+    topLine.className = "entry-topline";
+    amount.className = "entry-amount";
+    meta.className = "entry-meta";
+    address.className = "entry-address";
+    notes.className = "entry-notes";
 
-    amount.textContent = formatMoney(order.amount);
-    badge.textContent = order.paymentMethod === "efectivo" ? "Efectivo" : "Transferencia";
-    meta.textContent =
-      `${dateTimeFormatter.format(new Date(order.createdAt))} · ${order.zone || "Sin zona"}`;
+    amount.textContent = formatMoney(entry.amount);
+    meta.textContent = dateTimeFormatter.format(new Date(entry.createdAt));
 
-    const detailTokens = [];
+    topLine.append(amount, meta);
+    item.append(topLine);
 
-    if (Number.isFinite(order.estimatedKm)) {
-      detailTokens.push(`${formatNumber(order.estimatedKm)} km`);
+    if (entry.address) {
+      address.textContent = compactAddress(entry.address);
+      item.append(address);
     }
 
-    if (Number.isFinite(order.estimatedMinutes)) {
-      detailTokens.push(`${formatNumber(order.estimatedMinutes)} min`);
-    }
-
-    details.textContent = detailTokens.length ? detailTokens.join(" · ") : "Sin métricas cargadas";
-
-    if (order.notes) {
-      notes.textContent = order.notes;
-    }
-
-    topLine.append(amount, badge);
-    item.append(topLine, meta, details);
-
-    if (order.notes) {
+    if (entry.notes) {
+      notes.textContent = entry.notes;
       item.append(notes);
     }
 
-    elements.recentOrders.append(item);
+    elements.cashList.append(item);
   });
+}
+
+function handleExportPdf() {
+  if (!state.cashEntries.length) {
+    const message = "No hay registros para exportar en PDF.";
+    setInlineStatus(elements.exportStatus, message, "warning");
+    showToast(message, "warning");
+    return;
+  }
+
+  const jsPdfNamespace = window.jspdf;
+
+  if (!jsPdfNamespace || typeof jsPdfNamespace.jsPDF !== "function") {
+    const message = "La librería de PDF no está disponible.";
+    setInlineStatus(elements.exportStatus, message, "danger");
+    showToast(message, "danger");
+    return;
+  }
+
+  const { jsPDF } = jsPdfNamespace;
+  const doc = new jsPDF({
+    unit: "pt",
+    format: "a4",
+  });
+
+  if (typeof doc.autoTable !== "function") {
+    const message = "La tabla PDF no está disponible.";
+    setInlineStatus(elements.exportStatus, message, "danger");
+    showToast(message, "danger");
+    return;
+  }
+
+  const exportDate = new Date();
+  const totalGeneral = sumBy(state.cashEntries, (entry) => entry.amount);
+
+  doc.setFillColor(9, 10, 13);
+  doc.rect(0, 0, 595.28, 100, "F");
+  doc.setTextColor(245, 247, 250);
+  doc.setFont("helvetica", "bold");
+  doc.setFontSize(20);
+  doc.text("Rider Hub · Efectivo", 40, 42);
+  doc.setFont("helvetica", "normal");
+  doc.setFontSize(10);
+  doc.setTextColor(196, 202, 211);
+  doc.text(`Exportado: ${dateTimeFormatter.format(exportDate)}`, 40, 64);
+  doc.text(`Total general: ${formatMoney(totalGeneral)}`, 40, 80);
+
+  const body = state.cashEntries.map((entry) => [
+    dateTimeFormatter.format(new Date(entry.createdAt)),
+    formatMoney(entry.amount),
+    compactAddress(entry.address || "Sin dirección"),
+    entry.notes || "—",
+  ]);
+
+  doc.autoTable({
+    startY: 120,
+    head: [["Fecha y hora", "Monto", "Dirección", "Observación"]],
+    body,
+    theme: "grid",
+    headStyles: {
+      fillColor: [17, 19, 22],
+      textColor: [245, 247, 250],
+      lineColor: [38, 42, 48],
+      fontStyle: "bold",
+    },
+    styles: {
+      fillColor: [255, 255, 255],
+      textColor: [22, 24, 28],
+      lineColor: [220, 225, 232],
+      cellPadding: 8,
+      fontSize: 9.5,
+      overflow: "linebreak",
+    },
+    alternateRowStyles: {
+      fillColor: [248, 250, 252],
+    },
+    columnStyles: {
+      0: { cellWidth: 110 },
+      1: { cellWidth: 80 },
+      2: { cellWidth: 165 },
+      3: { cellWidth: 150 },
+    },
+    margin: {
+      left: 40,
+      right: 40,
+    },
+  });
+
+  doc.save(buildExportFileName("pdf"));
+
+  const message = "PDF exportado correctamente.";
+  setInlineStatus(elements.exportStatus, message, "success");
+  showToast(message, "success");
+}
+
+function handleExportExcel() {
+  if (!state.cashEntries.length) {
+    const message = "No hay registros para exportar en Excel.";
+    setInlineStatus(elements.exportStatus, message, "warning");
+    showToast(message, "warning");
+    return;
+  }
+
+  if (!window.XLSX) {
+    const message = "La librería de Excel no está disponible.";
+    setInlineStatus(elements.exportStatus, message, "danger");
+    showToast(message, "danger");
+    return;
+  }
+
+  const rows = state.cashEntries.map((entry) => ({
+    "Fecha y hora": dateTimeFormatter.format(new Date(entry.createdAt)),
+    Monto: Number(entry.amount),
+    Dirección: compactAddress(entry.address || ""),
+    Observación: entry.notes || "",
+  }));
+
+  const workbook = window.XLSX.utils.book_new();
+  const sheet = window.XLSX.utils.json_to_sheet(rows);
+
+  sheet["!cols"] = [
+    { wch: 18 },
+    { wch: 12 },
+    { wch: 34 },
+    { wch: 28 },
+  ];
+
+  window.XLSX.utils.book_append_sheet(workbook, sheet, "Efectivo");
+  window.XLSX.writeFile(workbook, buildExportFileName("xlsx"), {
+    compression: true,
+  });
+
+  const message = "Excel exportado correctamente.";
+  setInlineStatus(elements.exportStatus, message, "success");
+  showToast(message, "success");
+}
+
+function buildNeuqenDestination(rawText) {
+  const cleaned = processAddressInput(rawText).replace(/\s*,\s*/g, ", ");
+
+  if (!cleaned) {
+    return {
+      ok: false,
+      reason: "No hay una dirección para abrir.",
+    };
+  }
+
+  const normalized = normalizeMatchText(cleaned);
+  const blockedLocality = FORBIDDEN_LOCALITIES.find((item) => item.pattern.test(normalized));
+
+  if (blockedLocality) {
+    return {
+      ok: false,
+      reason: `La dirección parece pertenecer a ${blockedLocality.label}. Rider Hub solo abre Neuquén Capital.`,
+    };
+  }
+
+  let stripped = cleaned
+    .replace(/\bNeuqu[eé]n(?:\s+Capital)?\b/gi, "")
+    .replace(/\bNQN\b/gi, "")
+    .replace(/\bArgentina\b/gi, "")
+    .replace(/\bProvincia(?:\s+de|\s+del)?\s+Neuqu[eé]n\b/gi, "")
+    .replace(/\s*,\s*/g, ", ")
+    .replace(/\s{2,}/g, " ")
+    .replace(/(?:,\s*){2,}/g, ", ")
+    .replace(/(?:^,\s*|\s*,\s*$)/g, "")
+    .trim();
+
+  if (stripped.length < 3) {
+    return {
+      ok: false,
+      reason: "Sumá calle y altura antes de abrir Maps.",
+    };
+  }
+
+  return {
+    ok: true,
+    label: stripped,
+    destination: `${stripped}, ${CANONICAL_CITY}`,
+  };
+}
+
+function loadCashEntries() {
+  const cachedEntries = normalizeCashEntries(readStorage(STORAGE_KEYS.cashEntries, null));
+
+  if (cachedEntries.length) {
+    return cachedEntries;
+  }
+
+  const migratedEntries = migrateLegacyOrders(readStorage(STORAGE_KEYS.legacyOrders, []));
+
+  if (migratedEntries.length) {
+    writeStorage(STORAGE_KEYS.cashEntries, migratedEntries);
+  }
+
+  return migratedEntries;
+}
+
+function migrateLegacyOrders(items) {
+  return sortEntriesDescending(
+    items
+      .map((item) => {
+        const amount = Number(item?.amount);
+        const createdAt = new Date(item?.createdAt);
+
+        if (!Number.isFinite(amount) || amount <= 0 || Number.isNaN(createdAt.getTime())) {
+          return null;
+        }
+
+        if (item?.paymentMethod === "transferencia") {
+          return null;
+        }
+
+        return {
+          id: processAddressInput(item?.id) || `cash-${createdAt.getTime()}`,
+          amount,
+          createdAt: createdAt.toISOString(),
+          address: "",
+          notes: processAddressInput(item?.notes),
+        };
+      })
+      .filter(Boolean)
+  );
+}
+
+function normalizeAddressHistory(items) {
+  if (!Array.isArray(items)) {
+    return [];
+  }
+
+  const seenAddresses = new Set();
+
+  return items
+    .map((item) => {
+      const address = processAddressInput(item?.address || item);
+      const openedAt = new Date(item?.openedAt || Date.now());
+
+      if (!address || Number.isNaN(openedAt.getTime())) {
+        return null;
+      }
+
+      const lookupKey = address.toLowerCase();
+
+      if (seenAddresses.has(lookupKey)) {
+        return null;
+      }
+
+      seenAddresses.add(lookupKey);
+
+      return {
+        address,
+        openedAt: openedAt.toISOString(),
+      };
+    })
+    .filter(Boolean)
+    .slice(0, MAX_HISTORY_ITEMS);
+}
+
+function normalizeCashEntries(items) {
+  if (!Array.isArray(items)) {
+    return [];
+  }
+
+  return sortEntriesDescending(
+    items
+      .map((item) => {
+        const amount = Number(item?.amount);
+        const createdAt = new Date(item?.createdAt);
+
+        if (!Number.isFinite(amount) || amount <= 0 || Number.isNaN(createdAt.getTime())) {
+          return null;
+        }
+
+        const rawAddress = processAddressInput(item?.address);
+        let normalizedAddress = "";
+
+        if (rawAddress) {
+          const addressResult = buildNeuqenDestination(rawAddress);
+          normalizedAddress = addressResult.ok ? addressResult.destination : "";
+        }
+
+        return {
+          id: processAddressInput(item?.id) || `cash-${createdAt.getTime()}`,
+          amount,
+          createdAt: createdAt.toISOString(),
+          address: normalizedAddress,
+          notes: processAddressInput(item?.notes),
+        };
+      })
+      .filter(Boolean)
+  );
 }
 
 function setInlineStatus(element, message, tone = "default") {
@@ -481,8 +806,7 @@ function readStorage(key, fallback) {
       return fallback;
     }
 
-    const parsedValue = JSON.parse(rawValue);
-    return Array.isArray(fallback) && Array.isArray(parsedValue) ? parsedValue : fallback;
+    return JSON.parse(rawValue);
   } catch (error) {
     return fallback;
   }
@@ -498,63 +822,8 @@ function writeStorage(key, value) {
   }
 }
 
-function normalizeAddressHistory(items) {
-  const seenAddresses = new Set();
-
-  return items
-    .map((item) => {
-      const address = processAddressInput(item?.address);
-      const openedAt = new Date(item?.openedAt);
-
-      if (!address || Number.isNaN(openedAt.getTime())) {
-        return null;
-      }
-
-      const lookupKey = address.toLowerCase();
-
-      if (seenAddresses.has(lookupKey)) {
-        return null;
-      }
-
-      seenAddresses.add(lookupKey);
-
-      return {
-        address,
-        openedAt: openedAt.toISOString(),
-      };
-    })
-    .filter(Boolean)
-    .slice(0, MAX_HISTORY_ITEMS);
-}
-
-function normalizeOrders(items) {
-  return sortOrdersDescending(
-    items
-      .map((item) => {
-        const amount = Number(item?.amount);
-        const createdAt = new Date(item?.createdAt);
-
-        if (!Number.isFinite(amount) || amount <= 0 || Number.isNaN(createdAt.getTime())) {
-          return null;
-        }
-
-        return {
-          id: sanitizeText(item?.id) || `order-${createdAt.getTime()}`,
-          amount,
-          estimatedKm: normalizeOptionalNumber(item?.estimatedKm),
-          estimatedMinutes: normalizeOptionalNumber(item?.estimatedMinutes),
-          zone: sanitizeText(item?.zone),
-          paymentMethod: item?.paymentMethod === "transferencia" ? "transferencia" : "efectivo",
-          notes: sanitizeText(item?.notes),
-          createdAt: createdAt.toISOString(),
-        };
-      })
-      .filter(Boolean)
-  );
-}
-
 function parseNumber(value, options = {}) {
-  const normalizedValue = sanitizeText(value);
+  const normalizedValue = processAddressInput(value);
 
   if (!normalizedValue) {
     return options.required ? null : null;
@@ -574,25 +843,26 @@ function parseNumber(value, options = {}) {
   return parsedNumber;
 }
 
-function sanitizeText(value) {
-  return String(value ?? "").replace(/\s+/g, " ").trim();
+function normalizeMatchText(value) {
+  return processAddressInput(value)
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toLowerCase();
 }
 
-function normalizeOptionalNumber(value) {
-  if (value === null || value === undefined || value === "") {
-    return null;
+function compactAddress(value) {
+  const address = processAddressInput(value);
+
+  if (!address) {
+    return "";
   }
 
-  const numericValue = Number(value);
-  return Number.isFinite(numericValue) && numericValue >= 0 ? numericValue : null;
+  const suffix = `, ${CANONICAL_CITY}`;
+  return address.endsWith(suffix) ? address.slice(0, -suffix.length) : address;
 }
 
 function formatMoney(value) {
   return `$ ${currencyFormatter.format(value || 0)}`;
-}
-
-function formatNumber(value) {
-  return currencyFormatter.format(value);
 }
 
 function startOfDay(date) {
@@ -628,11 +898,18 @@ function sumBy(collection, iteratee) {
   return collection.reduce((total, item) => total + Number(iteratee(item) || 0), 0);
 }
 
-function sortOrdersDescending(orders) {
-  return [...orders].sort((left, right) => new Date(right.createdAt) - new Date(left.createdAt));
+function sortEntriesDescending(entries) {
+  return [...entries].sort((left, right) => new Date(right.createdAt) - new Date(left.createdAt));
+}
+
+function buildExportFileName(extension) {
+  const dateStamp = new Date().toISOString().slice(0, 10);
+  return `rider-hub-efectivo-${dateStamp}.${extension}`;
 }
 
 function getDateTimeLocalValue(date = new Date()) {
   const localDate = new Date(date.getTime() - date.getTimezoneOffset() * 60000);
   return localDate.toISOString().slice(0, 16);
 }
+
+console.info(`Engine activo: ${getActiveEngine()}`);
