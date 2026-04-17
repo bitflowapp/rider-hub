@@ -7,47 +7,61 @@ const LEVEL_PRIORITY = {
   night: 3,
 };
 
+const LABEL_BY_LEVEL = {
+  normal: "Normal",
+  caution: "Precaucion",
+  high: "Alta precaucion",
+  night: "No recomendado de noche",
+};
+
 const STRATEGY_WEIGHTS = {
-  fast: 2.5,
-  balanced: 6.5,
-  cautious: 11,
+  fast: 1.9,
+  balanced: 4.7,
+  cautious: 8.5,
 };
 
 export function getRiskZones() {
   return RISK_ZONES;
 }
 
+export function evaluateDestinationRisk(destinationPoint) {
+  return evaluateFeatureRisk(destinationPoint, "destination");
+}
+
 export function evaluateRouteRisk(routeFeature) {
-  const coordinates = extractLineCoordinates(routeFeature);
-  const matchedZones = RISK_ZONES.features.filter((zone) =>
-    routeIntersectsPolygon(coordinates, zone.geometry.coordinates[0])
-  );
-  const totalWeight = matchedZones.reduce(
-    (total, zone) => total + Number(zone.properties?.weight || 0),
-    0
-  );
-  const maxPriority = matchedZones.reduce(
-    (maxValue, zone) => Math.max(maxValue, LEVEL_PRIORITY[zone.properties?.level] || 0),
-    0
-  );
-  const reasons = matchedZones.map((zone) => zone.properties?.reason).filter(Boolean);
-  const names = matchedZones.map((zone) => zone.properties?.name).filter(Boolean);
+  return evaluateFeatureRisk(routeFeature, "route");
+}
+
+export function evaluateOperationalRisk({ destination, routeFeature }) {
+  const destinationSummary = evaluateDestinationRisk(destination);
+  const routeSummary = evaluateRouteRisk(routeFeature);
+  const overallLevel = getHighestLevel([destinationSummary.level, routeSummary.level]);
+  const reasons = uniqueList([...destinationSummary.reasons, ...routeSummary.reasons]).slice(0, 3);
+  const matchedZones = uniqueList([...destinationSummary.matchedZones, ...routeSummary.matchedZones]);
 
   return {
-    label: classifyRisk(totalWeight, maxPriority),
-    score: totalWeight,
-    matchedZones: names,
-    reasons: uniqueList(reasons),
-    hasNightWarning: matchedZones.some((zone) => zone.properties?.level === "night"),
+    destinationRisk: destinationSummary.label,
+    routeRisk: routeSummary.label,
+    overallLabel: LABEL_BY_LEVEL[overallLevel],
+    label: LABEL_BY_LEVEL[overallLevel],
+    level: overallLevel,
+    score: Math.max(destinationSummary.score, routeSummary.score),
+    matchedZones,
+    reasons,
+    recommendation: buildRecommendation(overallLevel, reasons),
+    hasNightWarning: destinationSummary.hasNightWarning || routeSummary.hasNightWarning,
+    destinationSummary,
+    routeSummary,
   };
 }
 
-export function scoreRouteForStrategy(route, riskSummary, strategy) {
+export function scoreRouteForStrategy(route, operationalRisk, strategy) {
   const durationMinutes = Number(route.durationSeconds || 0) / 60;
-  const riskPenalty = riskSummary.score * (STRATEGY_WEIGHTS[strategy] || STRATEGY_WEIGHTS.balanced);
-  const nightPenalty = strategy === "cautious" && riskSummary.hasNightWarning ? 25 : 0;
+  const distancePenalty = Number(route.distanceMeters || 0) / 1800;
+  const riskPenalty = (operationalRisk.score || 0) * (STRATEGY_WEIGHTS[strategy] || STRATEGY_WEIGHTS.balanced);
+  const nightPenalty = operationalRisk.hasNightWarning ? (strategy === "cautious" ? 15 : 24) : 0;
 
-  return durationMinutes + riskPenalty + nightPenalty;
+  return durationMinutes + distancePenalty + riskPenalty + nightPenalty;
 }
 
 export function buildAvoidPolygons(strategy) {
@@ -71,20 +85,91 @@ export function buildAvoidPolygons(strategy) {
   };
 }
 
-function classifyRisk(totalWeight, maxPriority) {
-  if (maxPriority >= LEVEL_PRIORITY.night) {
-    return "No recomendado de noche";
+export function getRiskTone(label) {
+  if (label === LABEL_BY_LEVEL.night) {
+    return "night";
   }
 
-  if (maxPriority >= LEVEL_PRIORITY.high || totalWeight >= 5) {
-    return "Alta precaucion";
+  if (label === LABEL_BY_LEVEL.high) {
+    return "danger";
   }
 
-  if (maxPriority >= LEVEL_PRIORITY.caution || totalWeight >= 2) {
-    return "Precaucion";
+  if (label === LABEL_BY_LEVEL.caution) {
+    return "warning";
   }
 
-  return "Normal";
+  return "normal";
+}
+
+function evaluateFeatureRisk(feature, mode) {
+  const matchedZones = RISK_ZONES.features.filter((zone) => {
+    if (mode === "destination") {
+      return pointTouchesZone(extractPointCoordinates(feature), zone.geometry.coordinates[0]);
+    }
+
+    return routeIntersectsPolygon(extractLineCoordinates(feature), zone.geometry.coordinates[0]);
+  });
+
+  const totalWeight = matchedZones.reduce((total, zone) => total + Number(zone.properties?.weight || 0), 0);
+  const strongestLevel = getHighestLevel(matchedZones.map((zone) => zone.properties?.level || "normal"));
+  const reasons = matchedZones.map((zone) => zone.properties?.reason).filter(Boolean);
+  const names = matchedZones.map((zone) => zone.properties?.name).filter(Boolean);
+
+  return {
+    level: classifyLevel(totalWeight, strongestLevel),
+    label: LABEL_BY_LEVEL[classifyLevel(totalWeight, strongestLevel)],
+    score: totalWeight,
+    matchedZones: names,
+    reasons: uniqueList(reasons),
+    hasNightWarning: matchedZones.some((zone) => zone.properties?.level === "night"),
+  };
+}
+
+function classifyLevel(totalWeight, strongestLevel) {
+  if (strongestLevel === "night") {
+    return "night";
+  }
+
+  if (strongestLevel === "high" || totalWeight >= 5) {
+    return "high";
+  }
+
+  if (strongestLevel === "caution" || totalWeight >= 2) {
+    return "caution";
+  }
+
+  return "normal";
+}
+
+function buildRecommendation(level, reasons) {
+  if (level === "night") {
+    return "No recomendado de noche por riesgo operativo cargado.";
+  }
+
+  if (level === "high") {
+    return reasons[0] || "Conviene minimizar espera y elegir una ruta mas estable.";
+  }
+
+  if (level === "caution") {
+    return reasons[0] || "Zona para operar con atencion.";
+  }
+
+  return "Sin alertas especificas cargadas.";
+}
+
+function getHighestLevel(levels) {
+  return levels.reduce((highest, candidate) => {
+    const safeCandidate = candidate && LEVEL_PRIORITY[candidate] != null ? candidate : "normal";
+    return LEVEL_PRIORITY[safeCandidate] > LEVEL_PRIORITY[highest] ? safeCandidate : highest;
+  }, "normal");
+}
+
+function extractPointCoordinates(feature) {
+  if (!feature?.geometry || feature.geometry.type !== "Point") {
+    return null;
+  }
+
+  return feature.geometry.coordinates || null;
 }
 
 function extractLineCoordinates(routeFeature) {
@@ -101,6 +186,14 @@ function extractLineCoordinates(routeFeature) {
   }
 
   return [];
+}
+
+function pointTouchesZone(point, polygonRing) {
+  if (!point || !polygonRing?.length) {
+    return false;
+  }
+
+  return pointInPolygon(point, polygonRing);
 }
 
 function routeIntersectsPolygon(lineCoordinates, polygonRing) {

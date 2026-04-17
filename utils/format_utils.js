@@ -102,5 +102,5 @@ export function sortByNewest(items, dateKey = "createdAt") {
 export function buildWeekRangeLabel(date = new Date()) {
   const weekStart = getWeekStart(date);
   const weekEnd = addDays(weekStart, 6);
-  return `Semana actual · ${weekFormatter.format(weekStart)} al ${weekFormatter.format(weekEnd)}`;
+  return `Semana actual | ${weekFormatter.format(weekStart)} al ${weekFormatter.format(weekEnd)}`;
 }

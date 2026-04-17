@@ -4,7 +4,18 @@ import { APP_CONFIG } from "./app_config.js";
 const CITY_SUFFIX = `, ${APP_CONFIG.cityQuery}`;
 
 export function normalizeAddressText(value) {
-  return processAddressInput(value).replace(/\s*,\s*/g, ", ");
+  return processAddressInput(value)
+    .replace(/\u00a0/g, " ")
+    .replace(/[|]+/g, " ")
+    .replace(/[–—]+/g, " ")
+    .replace(/[;:_*+=~`"'“”‘’<>[\]{}()!?¡¿]+/g, " ")
+    .replace(/[\\/#]+/g, " ")
+    .replace(/[°º]/g, " ")
+    .replace(/\s*,\s*/g, ", ")
+    .replace(/,+/g, ",")
+    .replace(/\s{2,}/g, " ")
+    .replace(/(?:^,\s*|\s*,\s*$)/g, "")
+    .trim();
 }
 
 export function toAsciiMatch(value) {
@@ -29,10 +40,7 @@ export function buildGoogleMapsUrl({ origin, destination }) {
   }
 
   if (destination?.coordinates) {
-    url.searchParams.set(
-      "destination",
-      `${destination.coordinates.lat},${destination.coordinates.lng}`
-    );
+    url.searchParams.set("destination", `${destination.coordinates.lat},${destination.coordinates.lng}`);
   } else if (destination?.label) {
     url.searchParams.set("destination", destination.label);
   }
@@ -69,9 +77,9 @@ export function prepareAddressSearch(rawText) {
   }
 
   const stripped = cleaned
-    .replace(/\bNeuqu[eé]n(?:\s+Capital)?\b/gi, "")
+    .replace(/\bNeuquen(?:\s+Capital)?\b/gi, "")
     .replace(/\bNQN\b/gi, "")
-    .replace(/\bProvincia(?:\s+de|\s+del)?\s+Neuqu[eé]n\b/gi, "")
+    .replace(/\bProvincia(?:\s+de|\s+del)?\s+Neuquen\b/gi, "")
     .replace(/\bArgentina\b/gi, "")
     .replace(/\s{2,}/g, " ")
     .replace(/(?:,\s*){2,}/g, ", ")
@@ -96,38 +104,6 @@ export function prepareAddressSearch(rawText) {
 export function isWithinNeuquenBounds(lng, lat) {
   const [[minLng, minLat], [maxLng, maxLat]] = APP_CONFIG.maxBounds;
   return lng >= minLng && lng <= maxLng && lat >= minLat && lat <= maxLat;
-}
-
-export function isGeocodedCandidateAccepted(candidate) {
-  if (!candidate || !candidate.coordinates) {
-    return false;
-  }
-
-  if (!isWithinNeuquenBounds(candidate.coordinates.lng, candidate.coordinates.lat)) {
-    return false;
-  }
-
-  if (findBlockedLocality(candidate.label) || findBlockedLocality(candidate.displayName)) {
-    return false;
-  }
-
-  const metadata = toAsciiMatch(
-    [
-      candidate.properties?.city,
-      candidate.properties?.district,
-      candidate.properties?.county,
-      candidate.properties?.state,
-      candidate.properties?.country,
-      candidate.displayName,
-    ]
-      .filter(Boolean)
-      .join(" ")
-  );
-
-  const isArgentina = (candidate.properties?.countrycode || "").toLowerCase() === "ar";
-  const referencesNeuquen = /\bneuquen\b/.test(metadata) || /\bconfluencia\b/.test(metadata);
-
-  return isArgentina && referencesNeuquen;
 }
 
 export function buildDestinationHistoryEntry(destination) {

@@ -1,7 +1,9 @@
 export const APP_CONFIG = {
   appName: "Rider Maps Neuquen",
-  cityDisplay: "Neuqu\u00e9n Capital",
-  cityQuery: "Neuqu\u00e9n Capital, Neuqu\u00e9n, Argentina",
+  cityDisplay: "Neuquen Capital",
+  cityQuery: "Neuquen Capital, Neuquen, Argentina",
+  provinceDisplay: "Neuquen",
+  countryDisplay: "Argentina",
   center: {
     lng: -68.0591,
     lat: -38.9516,
@@ -9,26 +11,29 @@ export const APP_CONFIG = {
   referenceOrigin: {
     lng: -68.0591,
     lat: -38.9516,
-    label: "Centro de Neuqu\u00e9n (referencia)",
+    label: "Centro de Neuquen (referencia)",
     isApproximate: true,
   },
-  defaultZoom: 13.25,
+  defaultZoom: 13.45,
+  focusZoom: 15.35,
   maxBounds: [
     [-68.18, -39.03],
     [-67.98, -38.87],
   ],
   geocodeBBox: [-68.18, -39.03, -67.98, -38.87],
-  mapStyleUrl: "https://tiles.openfreemap.org/styles/liberty",
+  mapStyleUrl: "https://tiles.openfreemap.org/styles/dark",
   storageKeys: {
-    destinationHistory: "riderMaps.destinationHistory.v2",
-    lastStrategy: "riderMaps.lastStrategy.v1",
-    routeFeedback: "riderMaps.routeFeedback.v1",
+    destinationHistory: "riderMaps.destinationHistory.v3",
+    lastStrategy: "riderMaps.lastStrategy.v2",
+    routeFeedback: "riderMaps.routeFeedback.v2",
     cashEntries: "riderHub.cashEntries.v2",
     legacyOrders: "riderHub.orders.v1",
+    lastResolvedAddress: "riderMaps.lastResolvedAddress.v1",
   },
   providers: {
     geocoding: {
       photonUrl: "https://photon.komoot.io/api/",
+      photonReverseUrl: "https://photon.komoot.io/reverse",
     },
     routing: {
       orsUrl: "https://api.openrouteservice.org/v2/directions/cycling-regular/geojson",
@@ -57,6 +62,7 @@ export const APP_CONFIG = {
   strategyOrder: ["fast", "balanced", "cautious"],
   maxHistoryItems: 12,
   recentFeedbackLimit: 8,
+  maxRouteAlternatives: 3,
 };
 
 export function getRuntimeConfig() {

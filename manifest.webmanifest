@@ -2,14 +2,14 @@
   "id": "./",
   "name": "Rider Maps Neuquen",
   "short_name": "Rider Maps",
-  "description": "PWA rider-first para Neuquen Capital: mapa embebido, rutas en bici, riesgo operativo y efectivo exportable.",
+  "description": "Rider Maps Neuquen: mapa rider-first para Neuquen Capital con direccion validada, ruta en bici y riesgo operativo visible.",
   "lang": "es",
   "start_url": "./index.html",
   "scope": "./",
   "display": "standalone",
   "orientation": "portrait",
-  "background_color": "#090a0d",
-  "theme_color": "#090a0d",
+  "background_color": "#07090d",
+  "theme_color": "#07090d",
   "icons": [
     {
       "src": "icons/icon-192.png",

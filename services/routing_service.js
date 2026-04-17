@@ -8,11 +8,37 @@ export async function getRoute({ origin, destination, strategy }) {
     try {
       return await getOrsRoute({ origin, destination, strategy, apiKey: runtimeConfig.orsApiKey });
     } catch (error) {
-      console.warn("openrouteservice no respondio, hago fallback a OSRM demo.", error);
+      console.warn("openrouteservice no respondio; hago fallback a OSRM demo.", error);
     }
   }
 
   return getOsrmRoute({ origin, destination });
+}
+
+export function getAlternativeRoutes(routes, activeRouteId) {
+  return routes.filter((route) => route.id !== activeRouteId);
+}
+
+export function summarizeRoute({ route, strategy, operationalRisk }) {
+  const label = operationalRisk?.overallLabel || "Normal";
+
+  if (strategy === "fast") {
+    return label === "Normal"
+      ? "Mas rapida para llegar sin desvio extra."
+      : "Mas rapida, pero toca zona de atencion.";
+  }
+
+  if (strategy === "cautious") {
+    return label === "Normal"
+      ? "Prudente: prioriza trayecto mas estable."
+      : "Prudente: intenta bajar exposicion aunque alargue un poco.";
+  }
+
+  if (label === "Normal") {
+    return "Equilibrada: balancea tiempo y estabilidad.";
+  }
+
+  return "Equilibrada: evita parte de la exposicion sin alargar demasiado.";
 }
 
 async function getOrsRoute({ origin, destination, strategy, apiKey }) {
@@ -26,9 +52,9 @@ async function getOrsRoute({ origin, destination, strategy, apiKey }) {
     elevation: false,
     options: {},
     alternative_routes: {
-      target_count: 3,
-      share_factor: 0.6,
-      weight_factor: 1.8,
+      target_count: APP_CONFIG.maxRouteAlternatives,
+      share_factor: 0.62,
+      weight_factor: strategy === "cautious" ? 2.3 : 1.85,
     },
   };
 
@@ -41,7 +67,7 @@ async function getOrsRoute({ origin, destination, strategy, apiKey }) {
   const response = await fetch(APP_CONFIG.providers.routing.orsUrl, {
     method: "POST",
     headers: {
-      Accept: "application/json, application/geo+json, application/gpx+xml, img/png; charset=utf-8",
+      Accept: "application/json, application/geo+json",
       Authorization: apiKey,
       "Content-Type": "application/json; charset=utf-8",
     },

@@ -1,9 +1,14 @@
 import { getActiveEngine } from "./engine/engine.js";
 import { exportCashEntriesExcel, exportCashEntriesPdf } from "./services/export_service.js";
-import { geocodeAddress } from "./services/geocoding_service.js";
+import { geocodeAddress, reverseGeocode } from "./services/geocoding_service.js";
 import { createMapService } from "./services/map_service.js";
-import { evaluateRouteRisk, getRiskZones, scoreRouteForStrategy } from "./services/risk_service.js";
-import { getRoute } from "./services/routing_service.js";
+import {
+  evaluateOperationalRisk,
+  getRiskTone,
+  getRiskZones,
+  scoreRouteForStrategy,
+} from "./services/risk_service.js";
+import { getAlternativeRoutes, getRoute, summarizeRoute } from "./services/routing_service.js";
 import { APP_CONFIG } from "./utils/app_config.js";
 import {
   buildDestinationHistoryEntry,
@@ -14,6 +19,7 @@ import {
   toAsciiMatch,
 } from "./utils/address_utils.js";
 import {
+  addDays,
   buildWeekRangeLabel,
   formatDateTime,
   formatDistance,
@@ -24,16 +30,12 @@ import {
   isWithinRange,
   sortByNewest,
   startOfDay,
-  addDays,
   sumBy,
 } from "./utils/format_utils.js";
 import { readJsonStorage, writeJsonStorage } from "./utils/storage_utils.js";
 
-const VIEW_NAMES = ["maps", "cash"];
-
 const state = {
   mapService: null,
-  currentView: "maps",
   selectedStrategy: readJsonStorage(APP_CONFIG.storageKeys.lastStrategy, "balanced"),
   destinationHistory: normalizeDestinationHistory(
     readJsonStorage(APP_CONFIG.storageKeys.destinationHistory, readJsonStorage("riderHub.addressHistory.v1", []))
@@ -42,32 +44,43 @@ const state = {
   cashEntries: [],
   origin: { ...APP_CONFIG.referenceOrigin },
   destination: null,
+  addressAnalysis: null,
   routes: [],
   activeRouteId: "",
   activeProvider: "",
+  isBusy: false,
+  routeError: "",
 };
 
 const elements = {
-  views: Array.from(document.querySelectorAll(".view")),
-  navButtons: Array.from(document.querySelectorAll(".nav-button")),
+  appStatusPill: document.querySelector("#app-status-pill"),
   strategyButtons: Array.from(document.querySelectorAll(".strategy-button")),
   feedbackButtons: Array.from(document.querySelectorAll(".feedback-button")),
   addressInput: document.querySelector("#address-input"),
   pasteAddressButton: document.querySelector("#paste-address-button"),
   searchAddressButton: document.querySelector("#search-address-button"),
   useLocationButton: document.querySelector("#use-location-button"),
-  calculateRouteButton: document.querySelector("#calculate-route-button"),
+  primaryActionButton: document.querySelector("#primary-action-button"),
+  showAlternativeButton: document.querySelector("#show-alternative-button"),
   openExternalNavButton: document.querySelector("#open-external-nav-button"),
+  jumpHistoryButton: document.querySelector("#jump-history-button"),
+  jumpCashButton: document.querySelector("#jump-cash-button"),
+  historyAnchor: document.querySelector("#history-anchor"),
+  cashAnchor: document.querySelector("#cash-anchor"),
   mapStatus: document.querySelector("#map-status"),
-  routeProviderLabel: document.querySelector("#route-provider-label"),
-  routeSelectionCopy: document.querySelector("#route-selection-copy"),
+  interpretedAddress: document.querySelector("#interpreted-address"),
+  addressStateBadge: document.querySelector("#address-state-badge"),
+  resolutionStatus: document.querySelector("#resolution-status"),
+  operationalRisk: document.querySelector("#operational-risk"),
+  recommendedRoute: document.querySelector("#recommended-route"),
+  recommendationTitle: document.querySelector("#recommendation-title"),
+  recommendationCopy: document.querySelector("#recommendation-copy"),
+  reasonList: document.querySelector("#reason-list"),
   routeDistance: document.querySelector("#route-distance"),
   routeDuration: document.querySelector("#route-duration"),
-  routeRiskValue: document.querySelector("#route-risk-value"),
-  routeRiskLabel: document.querySelector("#route-risk-label"),
-  routeReasons: document.querySelector("#route-reasons"),
-  routeWarningBadge: document.querySelector("#route-warning-badge"),
-  riskCallout: document.querySelector("#risk-callout"),
+  originSummary: document.querySelector("#origin-summary"),
+  routeWhy: document.querySelector("#route-why"),
+  routeProviderNote: document.querySelector("#route-provider-note"),
   routeList: document.querySelector("#route-list"),
   historyList: document.querySelector("#history-list"),
   feedbackList: document.querySelector("#feedback-list"),
@@ -97,13 +110,12 @@ async function init() {
   elements.cashDateTime.value = getDateTimeLocalValue();
 
   bindEvents();
-  syncViewFromHash();
   updateStrategyButtons();
   renderAddressSuggestions();
   renderHistory();
   renderFeedback();
   renderCashView();
-  renderRoutePanel();
+  renderOperationalPanel();
   syncCashAddressWithLastDestination();
 
   try {
@@ -112,7 +124,7 @@ async function init() {
       riskZones: getRiskZones(),
     });
 
-    state.mapService.setOrigin(buildPointFeature(state.origin, { kind: "origin" }));
+    syncMapLayers();
     setInlineStatus(elements.mapStatus, "Mapa listo. Busca un destino dentro de Neuquen Capital.", "success");
   } catch (error) {
     console.error(error);
@@ -128,22 +140,20 @@ async function init() {
 }
 
 function bindEvents() {
-  elements.navButtons.forEach((button) => {
-    button.addEventListener("click", () => {
-      window.location.hash = button.dataset.view;
-    });
-  });
-
-  window.addEventListener("hashchange", syncViewFromHash);
-
   elements.strategyButtons.forEach((button) => {
-    button.addEventListener("click", () => {
+    button.addEventListener("click", async () => {
+      if (state.selectedStrategy === button.dataset.strategy) {
+        return;
+      }
+
       state.selectedStrategy = button.dataset.strategy;
       writeJsonStorage(APP_CONFIG.storageKeys.lastStrategy, state.selectedStrategy);
       updateStrategyButtons();
 
-      if (state.routes.length) {
-        applyStrategyToRoutes();
+      if (state.destination) {
+        await recalculateRouteForCurrentDestination("strategy");
+      } else {
+        renderOperationalPanel();
       }
     });
   });
@@ -154,42 +164,26 @@ function bindEvents() {
     });
   });
 
+  elements.addressInput.addEventListener("keydown", async (event) => {
+    if (event.key === "Enter" && !event.shiftKey) {
+      event.preventDefault();
+      await handleSearchAddress();
+    }
+  });
+
   elements.pasteAddressButton.addEventListener("click", handlePasteAddress);
   elements.searchAddressButton.addEventListener("click", handleSearchAddress);
-  elements.calculateRouteButton.addEventListener("click", handleCalculateRoute);
   elements.useLocationButton.addEventListener("click", handleUseCurrentLocation);
+  elements.primaryActionButton.addEventListener("click", handlePrimaryAction);
+  elements.showAlternativeButton.addEventListener("click", handleShowAlternativeRoute);
   elements.openExternalNavButton.addEventListener("click", openExternalNavigation);
+  elements.jumpHistoryButton.addEventListener("click", () => scrollToSection(elements.historyAnchor));
+  elements.jumpCashButton.addEventListener("click", () => scrollToSection(elements.cashAnchor));
 
   elements.cashForm.addEventListener("submit", handleCashSubmit);
   elements.useLastAddressButton.addEventListener("click", applyLastDestinationToCashForm);
   elements.exportPdfButton.addEventListener("click", handleExportPdf);
   elements.exportExcelButton.addEventListener("click", handleExportExcel);
-}
-
-function syncViewFromHash() {
-  const hash = window.location.hash.replace("#", "").toLowerCase();
-  state.currentView = VIEW_NAMES.includes(hash) ? hash : "maps";
-
-  elements.views.forEach((view) => {
-    const isActive = view.id === `view-${state.currentView}`;
-    view.classList.toggle("is-active", isActive);
-    view.hidden = !isActive;
-  });
-
-  elements.navButtons.forEach((button) => {
-    const isActive = button.dataset.view === state.currentView;
-    button.classList.toggle("is-active", isActive);
-
-    if (isActive) {
-      button.setAttribute("aria-current", "page");
-    } else {
-      button.removeAttribute("aria-current");
-    }
-  });
-
-  if (state.currentView === "cash") {
-    renderCashView();
-  }
 }
 
 async function handlePasteAddress() {
@@ -208,7 +202,7 @@ async function handlePasteAddress() {
     }
 
     elements.addressInput.value = prepared.searchLabel;
-    setInlineStatus(elements.mapStatus, "Direccion pegada. Ahora toca Buscar.", "success");
+    setInlineStatus(elements.mapStatus, "Direccion pegada. Toca Buscar para interpretar y rutear.", "success");
     showToast("Direccion pegada desde el portapapeles.", "success");
   } catch (error) {
     setInlineStatus(
@@ -221,43 +215,85 @@ async function handlePasteAddress() {
 }
 
 async function handleSearchAddress() {
-  try {
-    setInlineStatus(elements.mapStatus, "Buscando una coincidencia confiable en Neuquen Capital...", "default");
+  const rawInput = elements.addressInput.value.trim();
 
-    const result = await geocodeAddress(elements.addressInput.value);
+  if (!rawInput) {
+    const message = "Ingresa o pega una direccion para empezar.";
+    setInlineStatus(elements.mapStatus, message, "warning");
+    showToast(message, "warning");
+    elements.addressInput.focus();
+    return;
+  }
+
+  await withBusyState(async () => {
+    state.routeError = "";
+    state.addressAnalysis = {
+      status: "interpreting",
+      interpretedLine: "Interpretando direccion...",
+      notes: [],
+      reason: "Estoy limpiando el texto y validando Neuquen Capital.",
+    };
+    state.routes = [];
+    state.activeRouteId = "";
+    renderOperationalPanel();
+
+    setInlineStatus(
+      elements.mapStatus,
+      "Interpretando direccion, validando Neuquen Capital y buscando la mejor coincidencia...",
+      "default"
+    );
+
+    const result = await geocodeAddress(rawInput);
 
     if (!result.ok) {
-      setInlineStatus(elements.mapStatus, result.reason, "danger");
-      showToast(result.reason, "danger");
+      state.destination = null;
+      state.activeProvider = result.provider || "";
+      state.addressAnalysis = {
+        ...(result.interpretation || {}),
+        status: result.status || result.interpretation?.status || "doubtful",
+        reason: result.reason,
+      };
+      writeJsonStorage(APP_CONFIG.storageKeys.lastResolvedAddress, {
+        ok: false,
+        rawInput,
+        analysis: state.addressAnalysis,
+      });
+      syncMapLayers();
+      renderOperationalPanel();
+
+      const tone = result.status === "outside" ? "danger" : "warning";
+      setInlineStatus(elements.mapStatus, result.reason, tone);
+      showToast(result.reason, tone);
       return;
     }
 
-    elements.addressInput.value = compactDestinationLabel(result.destination.label);
-    setDestination(result.destination);
+    state.destination = result.destination;
+    state.addressAnalysis = result.interpretation;
+    state.activeProvider = result.provider;
+    elements.addressInput.value = compactDestinationLabel(
+      result.interpretation.interpretedLine || result.destination.label
+    );
     pushDestinationHistory(result.destination);
     renderHistory();
     renderAddressSuggestions();
     syncCashAddressWithLastDestination();
+    syncMapLayers();
 
-    if (state.mapService) {
-      state.mapService.setDestination(buildPointFeature(result.destination.coordinates, { kind: "destination" }));
-      state.mapService.flyTo(result.destination.coordinates.lng, result.destination.coordinates.lat, 15.4);
-    }
+    await calculateRoutesForCurrentDestination("search");
 
-    state.routes = [];
-    state.activeRouteId = "";
-    renderRoutePanel();
-    setInlineStatus(elements.mapStatus, "Destino encontrado. Ya puedes calcular la ruta.", "success");
-    showToast("Destino ubicado dentro de Neuquen Capital.", "success");
-  } catch (error) {
-    console.error(error);
-    setInlineStatus(
-      elements.mapStatus,
-      "No pude resolver la direccion ahora. Revisa el texto e intenta de nuevo.",
-      "danger"
-    );
-    showToast("Fallo la busqueda de direccion.", "danger");
-  }
+    writeJsonStorage(APP_CONFIG.storageKeys.lastResolvedAddress, {
+      ok: true,
+      rawInput,
+      analysis: state.addressAnalysis,
+      destination: state.destination,
+    });
+
+    const successMessage = state.routes.length
+      ? "Direccion validada y ruta sugerida lista."
+      : "Direccion validada. Falta resolver la ruta.";
+    setInlineStatus(elements.mapStatus, successMessage, "success");
+    showToast(successMessage, "success");
+  });
 }
 
 async function handleUseCurrentLocation() {
@@ -271,7 +307,7 @@ async function handleUseCurrentLocation() {
   setInlineStatus(elements.mapStatus, "Buscando tu ubicacion actual...", "default");
 
   navigator.geolocation.getCurrentPosition(
-    (position) => {
+    async (position) => {
       state.origin = {
         lng: position.coords.longitude,
         lat: position.coords.latitude,
@@ -279,17 +315,28 @@ async function handleUseCurrentLocation() {
         isApproximate: false,
       };
 
-      setOriginFeature(state.origin);
-      setInlineStatus(elements.mapStatus, "Ubicacion actual lista para rutear.", "success");
-      showToast("Ubicacion actual fijada.", "success");
+      try {
+        const reverse = await reverseGeocode(state.origin);
+
+        if (reverse?.label) {
+          state.origin.label = reverse.label;
+        }
+      } catch (error) {
+        console.warn("No pude resolver el origen por reverse geocoding.", error);
+      }
+
+      syncMapLayers();
+      renderOperationalPanel();
+      setInlineStatus(elements.mapStatus, "Ubicacion actual fijada para rutear mejor.", "success");
+      showToast("Ubicacion actual lista.", "success");
 
       if (state.destination) {
-        handleCalculateRoute();
+        await recalculateRouteForCurrentDestination("location");
       }
     },
     (error) => {
-      const message = "No pude acceder a tu ubicacion. Sigo con origen de referencia.";
       console.error(error);
+      const message = "No pude acceder a tu ubicacion. Sigo con origen de referencia.";
       setInlineStatus(elements.mapStatus, message, "warning");
       showToast(message, "warning");
     },
@@ -301,79 +348,141 @@ async function handleUseCurrentLocation() {
   );
 }
 
-async function handleCalculateRoute() {
+async function recalculateRouteForCurrentDestination(source) {
   if (!state.destination) {
-    const message = "Busca primero un destino valido dentro de Neuquen Capital.";
-    setInlineStatus(elements.mapStatus, message, "warning");
-    showToast(message, "warning");
     return;
   }
 
-  try {
-    setInlineStatus(elements.mapStatus, "Calculando variantes de ruta en bici...", "default");
+  await withBusyState(async () => {
+    await calculateRoutesForCurrentDestination(source);
+  });
+}
 
+async function calculateRoutesForCurrentDestination(source) {
+  if (!state.destination) {
+    return;
+  }
+
+  setInlineStatus(elements.mapStatus, "Calculando rutas en bici y evaluando riesgo operativo...", "default");
+
+  try {
     const routeResponse = await getRoute({
       origin: state.origin,
       destination: state.destination.coordinates,
       strategy: state.selectedStrategy,
     });
 
+    const destinationFeature = buildPointFeature(state.destination.coordinates, { kind: "destination" });
     state.activeProvider = routeResponse.provider;
     state.routes = routeResponse.routes.map((route) => {
-      const risk = evaluateRouteRisk({
+      const routeFeature = {
         type: "Feature",
         geometry: route.geometry,
+      };
+      const operationalRisk = evaluateOperationalRisk({
+        destination: destinationFeature,
+        routeFeature,
       });
 
       return {
         ...route,
-        risk,
-        strategyScore: scoreRouteForStrategy(route, risk, state.selectedStrategy),
+        operationalRisk,
+        strategyScore: scoreRouteForStrategy(route, operationalRisk, state.selectedStrategy),
+        summary: summarizeRoute({
+          route,
+          strategy: state.selectedStrategy,
+          operationalRisk,
+        }),
       };
     });
 
-    applyStrategyToRoutes();
+    const sortedRoutes = getSortedRoutes();
+    state.activeRouteId = sortedRoutes[0]?.id || "";
+    state.routeError = "";
+    syncMapLayers();
+    renderOperationalPanel();
 
-    const successMessage = state.origin.isApproximate
-      ? "Ruta calculada usando el centro de Neuquen como referencia. Toca Mi ubicacion para mejorar precision."
-      : "Ruta calculada. Ya puedes revisar riesgo y abrir navegacion externa.";
-
-    setInlineStatus(elements.mapStatus, successMessage, "success");
-    showToast("Ruta calculada.", "success");
+    if (source === "strategy") {
+      showToast(`Ruta ${buildStrategyLabel(state.selectedStrategy).toLowerCase()} actualizada.`, "success");
+    }
   } catch (error) {
     console.error(error);
     state.routes = [];
     state.activeRouteId = "";
-    renderRoutePanel();
-    setInlineStatus(
-      elements.mapStatus,
-      "No pude calcular la ruta en este momento. Intenta de nuevo en unos segundos.",
-      "danger"
-    );
+    state.routeError = "No pude calcular una ruta usable en este momento.";
+    syncMapLayers();
+    renderOperationalPanel();
+    setInlineStatus(elements.mapStatus, state.routeError, "danger");
     showToast("Fallo el calculo de ruta.", "danger");
   }
 }
 
-function applyStrategyToRoutes() {
-  if (!state.routes.length) {
-    renderRoutePanel();
+async function handlePrimaryAction() {
+  const uiState = deriveUiState();
+
+  if (uiState.primaryActionKind === "search") {
+    await handleSearchAddress();
     return;
   }
 
-  state.routes = state.routes.map((route) => ({
-    ...route,
-    strategyScore: scoreRouteForStrategy(route, route.risk, state.selectedStrategy),
-  }));
+  if (uiState.primaryActionKind === "route") {
+    await recalculateRouteForCurrentDestination("primary");
+    return;
+  }
 
-  const sortedRoutes = [...state.routes].sort((left, right) => left.strategyScore - right.strategyScore);
-  state.activeRouteId = sortedRoutes[0].id;
-  renderRoutePanel();
+  if (uiState.primaryActionKind === "review") {
+    elements.addressInput.focus();
+    elements.addressInput.select();
+    return;
+  }
+
+  if (uiState.primaryActionKind === "safer") {
+    state.selectedStrategy = "cautious";
+    writeJsonStorage(APP_CONFIG.storageKeys.lastStrategy, state.selectedStrategy);
+    updateStrategyButtons();
+    await recalculateRouteForCurrentDestination("strategy");
+    return;
+  }
+
+  if (uiState.primaryActionKind === "suggested") {
+    selectSuggestedRoute();
+  }
+}
+
+function handleShowAlternativeRoute() {
+  const sortedRoutes = getSortedRoutes();
+
+  if (sortedRoutes.length < 2) {
+    return;
+  }
+
+  const currentIndex = Math.max(
+    0,
+    sortedRoutes.findIndex((route) => route.id === state.activeRouteId)
+  );
+  const nextIndex = (currentIndex + 1) % sortedRoutes.length;
+
+  state.activeRouteId = sortedRoutes[nextIndex].id;
+  syncMapLayers();
+  renderOperationalPanel();
+  showToast("Mostrando otra alternativa.", "success");
+}
+
+function selectSuggestedRoute() {
+  const suggestedRoute = getSortedRoutes()[0];
+
+  if (!suggestedRoute) {
+    return;
+  }
+
+  state.activeRouteId = suggestedRoute.id;
+  syncMapLayers();
+  renderOperationalPanel();
+  showToast("Ruta sugerida enfocada.", "success");
 }
 
 function openExternalNavigation() {
-  const activeRoute = getActiveRoute();
-
-  if (!activeRoute || !state.destination) {
+  if (!state.destination) {
     return;
   }
 
@@ -389,70 +498,231 @@ function openExternalNavigation() {
   }
 }
 
-function setDestination(destination) {
-  state.destination = destination;
-
-  if (state.mapService) {
-    state.mapService.setDestination(buildPointFeature(destination.coordinates, { kind: "destination" }));
+function syncMapLayers() {
+  if (!state.mapService) {
+    return;
   }
+
+  state.mapService.setOrigin(buildPointFeature(state.origin, { kind: "origin" }));
+  state.mapService.setDestination(
+    state.destination ? buildPointFeature(state.destination.coordinates, { kind: "destination" }) : null
+  );
+  state.mapService.setRoutes(state.routes, state.activeRouteId, {
+    origin: state.origin,
+    destination: state.destination,
+  });
 }
 
-function setOriginFeature(origin) {
-  if (state.mapService) {
-    state.mapService.setOrigin(buildPointFeature(origin, { kind: "origin" }));
-
-    if (!origin.isApproximate) {
-      state.mapService.flyTo(origin.lng, origin.lat, 14.8);
-    }
-  }
-}
-
-function renderRoutePanel() {
+function renderOperationalPanel() {
+  const uiState = deriveUiState();
   const activeRoute = getActiveRoute();
 
-  elements.routeProviderLabel.textContent = buildProviderLabel(state.activeProvider);
-  elements.openExternalNavButton.disabled = !activeRoute || !state.destination;
+  elements.appStatusPill.textContent = uiState.headerBadge;
+  setBadgeTone(elements.appStatusPill, uiState.badgeTone);
+
+  elements.interpretedAddress.textContent =
+    state.addressAnalysis?.interpretedLine || "Esperando direccion";
+  elements.addressStateBadge.textContent = uiState.addressBadge;
+  setBadgeTone(elements.addressStateBadge, uiState.badgeTone);
+
+  elements.resolutionStatus.textContent = uiState.resolutionStatus;
+  elements.operationalRisk.textContent = activeRoute?.operationalRisk?.overallLabel || uiState.operationalRisk;
+  elements.recommendedRoute.textContent = uiState.recommendedRoute;
+  elements.recommendationTitle.textContent = uiState.recommendationTitle;
+  elements.recommendationCopy.textContent = uiState.recommendationCopy;
+  elements.routeDistance.textContent = activeRoute ? formatDistance(activeRoute.distanceMeters) : "Sin ruta";
+  elements.routeDuration.textContent = activeRoute ? formatDuration(activeRoute.durationSeconds) : "Sin ruta";
+  elements.originSummary.textContent = buildOriginCopy();
+  elements.routeWhy.textContent = activeRoute?.summary || state.routeError || "Todavia no hay una ruta activa.";
+  elements.routeProviderNote.textContent = buildProviderLabel(state.activeProvider);
+
+  elements.primaryActionButton.textContent = uiState.primaryActionLabel;
+  elements.primaryActionButton.disabled = uiState.primaryActionDisabled;
+  elements.showAlternativeButton.disabled = getAlternativeRoutes(state.routes, state.activeRouteId).length === 0;
+  elements.openExternalNavButton.disabled = !state.destination;
+
   elements.feedbackButtons.forEach((button) => {
     button.disabled = !activeRoute;
   });
 
-  if (!activeRoute) {
-    elements.routeSelectionCopy.textContent = state.destination
-      ? `Destino listo: ${compactDestinationLabel(state.destination.label)}. Calcula la ruta para comparar variantes.`
-      : "Define un destino y calcula la ruta para ver distancia, tiempo, riesgo y variantes.";
-    elements.routeDistance.textContent = "Sin ruta";
-    elements.routeDuration.textContent = "Sin ruta";
-    elements.routeRiskValue.textContent = "Sin evaluar";
-    elements.routeRiskLabel.textContent = "Normal";
-    elements.routeReasons.textContent =
-      "La evaluacion cruza la ruta con una base local de riesgo operativo semilla.";
-    elements.routeWarningBadge.hidden = true;
-    setRiskCalloutTone("normal");
-    if (state.mapService) {
-      state.mapService.setRoutes([], "");
-    }
-    renderRouteList([]);
-    return;
+  renderReasonList(buildReasonItems());
+  renderRouteList(getSortedRoutes());
+}
+
+function deriveUiState() {
+  const activeRoute = getActiveRoute();
+  const stage = getOperationalStage();
+  const base = {
+    headerBadge: "Esperando",
+    addressBadge: "Esperando",
+    badgeTone: "neutral",
+    resolutionStatus: "Esperando direccion",
+    operationalRisk: "Sin evaluar",
+    recommendedRoute: "Todavia no calculada",
+    recommendationTitle: "Pega una direccion para empezar",
+    recommendationCopy:
+      "Voy a limpiarla, validar Neuquen Capital y sugerirte la mejor ruta para salir rapido.",
+    primaryActionLabel: "Buscar destino",
+    primaryActionKind: "search",
+    primaryActionDisabled: state.isBusy,
+  };
+
+  if (stage === "interpreting") {
+    return {
+      ...base,
+      headerBadge: "Interpretando",
+      addressBadge: "Procesando",
+      resolutionStatus: "Interpretando direccion",
+      recommendedRoute: "Calculando",
+      recommendationTitle: "Interpretando direccion",
+      recommendationCopy: state.addressAnalysis?.reason || "Limpio el texto y valido la ciudad.",
+    };
   }
 
-  elements.routeSelectionCopy.textContent = `${compactDestinationLabel(state.destination.label)} · ${buildOriginCopy()}`;
-  elements.routeDistance.textContent = formatDistance(activeRoute.distanceMeters);
-  elements.routeDuration.textContent = formatDuration(activeRoute.durationSeconds);
-  elements.routeRiskValue.textContent = activeRoute.risk.label;
-  elements.routeRiskLabel.textContent = activeRoute.risk.label;
-  elements.routeReasons.textContent = activeRoute.risk.reasons.length
-    ? activeRoute.risk.reasons.join(" ")
-    : "No detecte cruces con zonas cargadas como mas delicadas.";
-
-  const shouldWarn = activeRoute.risk.label !== "Normal";
-  elements.routeWarningBadge.hidden = !shouldWarn;
-  elements.routeWarningBadge.textContent = shouldWarn ? "Atencion" : "";
-  setRiskCalloutTone(activeRoute.risk.label);
-  renderRouteList(state.routes);
-
-  if (state.mapService) {
-    state.mapService.setRoutes(state.routes, state.activeRouteId);
+  if (stage === "outside") {
+    return {
+      ...base,
+      headerBadge: "Fuera",
+      addressBadge: "Fuera de alcance",
+      badgeTone: "danger",
+      resolutionStatus: "Fuera de Neuquen Capital",
+      recommendationTitle: "Direccion fuera de alcance",
+      recommendationCopy: state.addressAnalysis?.reason || "Solo se aceptan destinos dentro de Neuquen Capital.",
+      primaryActionLabel: "Revisar direccion",
+      primaryActionKind: "review",
+      primaryActionDisabled: false,
+    };
   }
+
+  if (stage === "doubtful") {
+    return {
+      ...base,
+      headerBadge: "Dudosa",
+      addressBadge: "Revisar",
+      badgeTone: "warning",
+      resolutionStatus: "Direccion dudosa",
+      recommendationTitle: "Direccion necesita revision",
+      recommendationCopy:
+        state.addressAnalysis?.reason || "No pude validarla con suficiente confianza. Conviene revisar antes de salir.",
+      primaryActionLabel: "Revisar direccion",
+      primaryActionKind: "review",
+      primaryActionDisabled: false,
+    };
+  }
+
+  if (stage === "valid") {
+    return {
+      ...base,
+      headerBadge: "Valida",
+      addressBadge: "Valida",
+      badgeTone: "success",
+      resolutionStatus: "Direccion valida",
+      recommendedRoute: `${buildStrategyLabel(state.selectedStrategy)} pendiente`,
+      recommendationTitle: "Destino validado",
+      recommendationCopy:
+        state.routeError || "La direccion esta bien interpretada. Falta resolver la mejor ruta.",
+      primaryActionLabel: "Buscar ruta sugerida",
+      primaryActionKind: "route",
+      primaryActionDisabled: false,
+    };
+  }
+
+  if (stage === "night") {
+    const canGoSafer = state.selectedStrategy !== "cautious";
+
+    return {
+      ...base,
+      headerBadge: "Noche",
+      addressBadge: "Nocturno",
+      badgeTone: "night",
+      resolutionStatus: "No recomendado de noche",
+      operationalRisk: activeRoute?.operationalRisk?.overallLabel || "No recomendado de noche",
+      recommendedRoute: `${buildStrategyLabel(state.selectedStrategy)} sugerida`,
+      recommendationTitle: canGoSafer ? "Conviene pasar a ruta prudente" : "No recomendado de noche",
+      recommendationCopy:
+        activeRoute?.operationalRisk?.recommendation || "Conviene evitar esta ruta de noche.",
+      primaryActionLabel: canGoSafer ? "Usar ruta prudente" : "No recomendado de noche",
+      primaryActionKind: canGoSafer ? "safer" : "suggested",
+      primaryActionDisabled: !canGoSafer,
+    };
+  }
+
+  if (stage === "attention") {
+    const canGoSafer = state.selectedStrategy !== "cautious";
+
+    return {
+      ...base,
+      headerBadge: "Atencion",
+      addressBadge: "Atencion",
+      badgeTone: "warning",
+      resolutionStatus: "Ruta con atencion",
+      operationalRisk: activeRoute?.operationalRisk?.overallLabel || "Precaucion",
+      recommendedRoute: `${buildStrategyLabel(state.selectedStrategy)} sugerida`,
+      recommendationTitle: canGoSafer ? "Conviene bajar exposicion" : "Ruta lista con atencion",
+      recommendationCopy:
+        activeRoute?.operationalRisk?.recommendation || "La ruta toca un sector que requiere mas cuidado operativo.",
+      primaryActionLabel: canGoSafer ? "Usar ruta prudente" : "Ir por ruta sugerida",
+      primaryActionKind: canGoSafer ? "safer" : "suggested",
+      primaryActionDisabled: false,
+    };
+  }
+
+  if (stage === "route-ready") {
+    return {
+      ...base,
+      headerBadge: "Lista",
+      addressBadge: "Ruta lista",
+      badgeTone: "success",
+      resolutionStatus: "Ruta lista",
+      operationalRisk: activeRoute?.operationalRisk?.overallLabel || "Normal",
+      recommendedRoute: `${buildStrategyLabel(state.selectedStrategy)} sugerida`,
+      recommendationTitle: `Ruta ${buildStrategyLabel(state.selectedStrategy).toLowerCase()} sugerida`,
+      recommendationCopy: activeRoute?.summary || "Ruta lista para salir.",
+      primaryActionLabel: "Ir por ruta sugerida",
+      primaryActionKind: "suggested",
+      primaryActionDisabled: false,
+    };
+  }
+
+  return base;
+}
+
+function getOperationalStage() {
+  if (state.isBusy) {
+    return "interpreting";
+  }
+
+  if (state.addressAnalysis?.status === "outside") {
+    return "outside";
+  }
+
+  if (!state.destination && state.addressAnalysis?.status === "doubtful") {
+    return "doubtful";
+  }
+
+  const activeRoute = getActiveRoute();
+
+  if (activeRoute?.operationalRisk?.overallLabel === "No recomendado de noche") {
+    return "night";
+  }
+
+  if (activeRoute && activeRoute.operationalRisk?.overallLabel !== "Normal") {
+    return "attention";
+  }
+
+  if (activeRoute) {
+    return "route-ready";
+  }
+
+  if (state.destination) {
+    return "valid";
+  }
+
+  if (state.addressAnalysis?.status === "doubtful") {
+    return "doubtful";
+  }
+
+  return "waiting";
 }
 
 function renderRouteList(routes) {
@@ -460,47 +730,72 @@ function renderRouteList(routes) {
 
   if (!routes.length) {
     elements.routeList.append(
-      createEmptyState("Todavia no hay rutas calculadas. Busca un destino y toca Calcular ruta.")
+      createEmptyState("Todavia no hay rutas activas. Busca una direccion valida para ver la sugerencia.")
     );
     return;
   }
 
-  [...routes]
-    .sort((left, right) => left.strategyScore - right.strategyScore)
-    .forEach((route, index) => {
-      const button = document.createElement("button");
-      const topLine = document.createElement("div");
-      const title = document.createElement("strong");
-      const subtitle = document.createElement("span");
-      const metrics = document.createElement("div");
+  routes.slice(0, APP_CONFIG.maxRouteAlternatives).forEach((route, index) => {
+    const button = document.createElement("button");
+    const topLine = document.createElement("div");
+    const title = document.createElement("strong");
+    const subtitle = document.createElement("span");
+    const copy = document.createElement("p");
+    const tags = document.createElement("div");
 
-      button.type = "button";
-      button.className = "route-card";
+    button.type = "button";
+    button.className = "route-card";
 
-      if (route.id === state.activeRouteId) {
-        button.classList.add("is-active");
-      }
+    if (route.id === state.activeRouteId) {
+      button.classList.add("is-active");
+    }
 
-      button.addEventListener("click", () => {
-        state.activeRouteId = route.id;
-        renderRoutePanel();
-      });
-
-      topLine.className = "route-card-top";
-      title.textContent = index === 0 ? "Recomendada" : `Alternativa ${index + 1}`;
-      subtitle.className = "history-meta";
-      subtitle.textContent = `${formatDistance(route.distanceMeters)} · ${formatDuration(route.durationSeconds)}`;
-      topLine.append(title, subtitle);
-
-      metrics.className = "route-card-metrics";
-      metrics.append(
-        createTinyPill(route.risk.label, getRiskTone(route.risk.label)),
-        createTinyPill(buildStrategyLabel(state.selectedStrategy), "accent")
-      );
-
-      button.append(topLine, metrics);
-      elements.routeList.append(button);
+    button.addEventListener("click", () => {
+      state.activeRouteId = route.id;
+      syncMapLayers();
+      renderOperationalPanel();
     });
+
+    topLine.className = "route-card-top";
+    title.textContent = index === 0 ? "Sugerida" : `Alternativa ${index + 1}`;
+    subtitle.className = "history-meta";
+    subtitle.textContent = `${formatDistance(route.distanceMeters)} | ${formatDuration(route.durationSeconds)}`;
+    topLine.append(title, subtitle);
+
+    copy.textContent = route.summary;
+    tags.className = "route-card-tags";
+    tags.append(
+      createTinyPill(route.operationalRisk.overallLabel, getRiskTone(route.operationalRisk.overallLabel)),
+      createTinyPill(buildStrategyLabel(state.selectedStrategy), "accent")
+    );
+
+    button.append(topLine, copy, tags);
+    elements.routeList.append(button);
+  });
+}
+
+function renderReasonList(items) {
+  elements.reasonList.replaceChildren();
+
+  if (!items.length) {
+    elements.reasonList.append(createReasonChip("Esperando informacion util para decidir."));
+    return;
+  }
+
+  items.slice(0, 4).forEach((item) => {
+    elements.reasonList.append(createReasonChip(item));
+  });
+}
+
+function buildReasonItems() {
+  const activeRoute = getActiveRoute();
+  const reasons = [
+    ...(state.addressAnalysis?.notes || []),
+    state.destination ? "Destino dentro de Neuquen Capital." : "",
+    ...(activeRoute?.operationalRisk?.reasons || []),
+  ];
+
+  return [...new Set(reasons.filter(Boolean))];
 }
 
 function renderHistory() {
@@ -508,7 +803,7 @@ function renderHistory() {
 
   if (!state.destinationHistory.length) {
     elements.historyList.append(
-      createEmptyState("Tus destinos buscados van a quedar aqui para reusar en segundos.")
+      createEmptyState("Tus destinos validados van a quedar aqui para relanzar una busqueda en segundos.")
     );
     return;
   }
@@ -520,17 +815,9 @@ function renderHistory() {
 
     button.type = "button";
     button.className = "history-button";
-    button.addEventListener("click", () => {
+    button.addEventListener("click", async () => {
       elements.addressInput.value = compactDestinationLabel(entry.label);
-      setDestination(entry);
-      renderRoutePanel();
-
-      if (state.mapService) {
-        state.mapService.setDestination(buildPointFeature(entry.coordinates, { kind: "destination" }));
-        state.mapService.flyTo(entry.coordinates.lng, entry.coordinates.lat, 15.4);
-      }
-
-      setInlineStatus(elements.mapStatus, "Destino cargado desde historial. Ya puedes rutear.", "success");
+      await handleSearchAddress();
     });
 
     title.className = "history-address";
@@ -565,8 +852,7 @@ function renderFeedback() {
     label.textContent = buildFeedbackLabel(entry.type);
     meta.className = "feedback-meta";
     meta.textContent = formatDateTime(entry.createdAt);
-    copy.className = "route-card-copy";
-    copy.textContent = `${entry.destinationLabel} · ${entry.strategyLabel}`;
+    copy.textContent = `${entry.destinationLabel} | ${entry.strategyLabel}`;
 
     topLine.append(label, meta);
     item.append(topLine, copy);
@@ -598,7 +884,7 @@ function saveRouteFeedback(type) {
     destinationLabel: compactDestinationLabel(state.destination.label),
     strategy: state.selectedStrategy,
     strategyLabel: buildStrategyLabel(state.selectedStrategy),
-    routeRisk: activeRoute.risk.label,
+    routeRisk: activeRoute.operationalRisk?.overallLabel,
   };
 
   state.routeFeedback = sortByNewest([entry, ...state.routeFeedback]);
@@ -675,17 +961,6 @@ function handleCashSubmit(event) {
   state.cashEntries = sortByNewest([entry, ...state.cashEntries]);
   writeJsonStorage(APP_CONFIG.storageKeys.cashEntries, state.cashEntries);
 
-  if (address && state.destination && compactDestinationLabel(state.destination.label) === compactDestinationLabel(address)) {
-    pushDestinationHistory({
-      id: entry.id,
-      label: address,
-      displayName: address,
-      coordinates: state.destination.coordinates,
-    });
-    renderHistory();
-    renderAddressSuggestions();
-  }
-
   elements.cashForm.reset();
   elements.cashDateTime.value = getDateTimeLocalValue();
   syncCashAddressWithLastDestination();
@@ -755,7 +1030,7 @@ function renderCashList() {
     item.className = "entry-item";
     topLine.className = "entry-topline";
     amount.className = "entry-amount";
-    meta.className = "entry-meta";
+    meta.className = "history-meta";
     amount.textContent = formatMoney(entry.amount);
     meta.textContent = formatDateTime(entry.createdAt);
     topLine.append(amount, meta);
@@ -930,6 +1205,32 @@ function setInlineStatus(element, message, tone = "default") {
   }
 }
 
+function setBadgeTone(element, tone) {
+  element.classList.remove("is-neutral", "is-success", "is-warning", "is-danger", "is-night");
+
+  if (tone === "success") {
+    element.classList.add("is-success");
+    return;
+  }
+
+  if (tone === "warning") {
+    element.classList.add("is-warning");
+    return;
+  }
+
+  if (tone === "danger") {
+    element.classList.add("is-danger");
+    return;
+  }
+
+  if (tone === "night") {
+    element.classList.add("is-night");
+    return;
+  }
+
+  element.classList.add("is-neutral");
+}
+
 function showToast(message, tone = "default") {
   const toast = document.createElement("div");
   toast.className = "toast";
@@ -953,9 +1254,11 @@ function createEmptyState(message) {
   return node;
 }
 
-function setRiskCalloutTone(label) {
-  elements.riskCallout.classList.remove("is-normal", "is-caution", "is-high", "is-night");
-  elements.riskCallout.classList.add(`is-${getRiskTone(label)}`);
+function createReasonChip(label) {
+  const chip = document.createElement("span");
+  chip.className = "reason-chip";
+  chip.textContent = label;
+  return chip;
 }
 
 function createTinyPill(label, tone = "accent") {
@@ -966,24 +1269,12 @@ function createTinyPill(label, tone = "accent") {
   return pill;
 }
 
-function getRiskTone(label) {
-  if (label === "No recomendado de noche") {
-    return "night";
-  }
-
-  if (label === "Alta precaucion") {
-    return "danger";
-  }
-
-  if (label === "Precaucion") {
-    return "warning";
-  }
-
-  return "accent";
-}
-
 function getActiveRoute() {
   return state.routes.find((route) => route.id === state.activeRouteId) || null;
+}
+
+function getSortedRoutes() {
+  return [...state.routes].sort((left, right) => left.strategyScore - right.strategyScore);
 }
 
 function buildPointFeature(point, extraProperties = {}) {
@@ -1013,8 +1304,8 @@ function buildProviderLabel(provider) {
 
 function buildOriginCopy() {
   return state.origin.isApproximate
-    ? "origen de referencia (centro)"
-    : "origen con tu ubicacion actual";
+    ? "Centro de Neuquen (referencia)"
+    : compactDestinationLabel(state.origin.label || "Mi ubicacion actual");
 }
 
 function buildStrategyLabel(strategy) {
@@ -1046,6 +1337,29 @@ function parsePositiveNumber(value) {
   const parsed = Number(raw);
 
   return Number.isFinite(parsed) && parsed > 0 ? parsed : null;
+}
+
+function scrollToSection(node) {
+  node?.scrollIntoView({
+    behavior: "smooth",
+    block: "start",
+  });
+}
+
+async function withBusyState(task) {
+  if (state.isBusy) {
+    return;
+  }
+
+  state.isBusy = true;
+  renderOperationalPanel();
+
+  try {
+    await task();
+  } finally {
+    state.isBusy = false;
+    renderOperationalPanel();
+  }
 }
 
 function registerServiceWorker() {

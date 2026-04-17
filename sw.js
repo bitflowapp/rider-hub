@@ -1,4 +1,4 @@
-const CACHE_NAME = "rider-hub-v3";
+const CACHE_NAME = "rider-hub-v4";
 const APP_SHELL = [
   "./",
   "./index.html",
@@ -6,6 +6,7 @@ const APP_SHELL = [
   "./app.js",
   "./manifest.webmanifest",
   "./404.html",
+  "./data/neuquen_streets.js",
   "./data/risk_zones.js",
   "./engine/engine.js",
   "./engine/none.js",
@@ -21,6 +22,7 @@ const APP_SHELL = [
   "./services/map_service.js",
   "./services/risk_service.js",
   "./services/routing_service.js",
+  "./services/street_index_service.js",
   "./utils/address_utils.js",
   "./utils/app_config.js",
   "./utils/format_utils.js",
