@@ -125,4 +125,7 @@ La app sigue siendo viable en GitHub Pages porque:
 - Basemap, geocoder y routing dependen de servicios remotos.
 - GitHub Pages solo sirve el frontend; no aloja geocoding ni routing propio.
 - La base local de calles es amplia para una semilla operativa, no un callejero municipal exhaustivo.
+- La navegacion en vivo depende del GPS del navegador: en bicis o telefonos con senal floja puede haber jitter, heading ruidoso o updates espaciados.
+- El heading del icono bici solo rota cuando la senal parece confiable; si no, se mantiene estable para evitar movimientos raros.
+- El recalculo por desvio sigue siendo prudente y con debounce: evita spamear requests, pero depende de la precision real del GPS y del provider de rutas.
 - Para subir mucho la robustez real conviene sumar cache/proxy, feedback operacional persistido y dataset de riesgo validado en calle.

@@ -75,6 +75,7 @@ export async function createMapService({ containerId, riskZones }) {
     pitchWithRotate: false,
   });
   const scheduleResize = createResizeScheduler(map);
+  const userLocationMarker = createUserLocationMarker(map);
 
   map.touchZoomRotate.disableRotation();
   map.addControl(new globalThis.maplibregl.NavigationControl({ showCompass: false, visualizePitch: false }), "top-right");
@@ -110,16 +111,55 @@ export async function createMapService({ containerId, riskZones }) {
 
       resizeMap(map);
       updateSource(map, "routes", featureCollection(features));
-      fitMapToContext(map, {
-        routes: features,
-        origin: context.origin,
-        destination: context.destination,
-        trackingPoint: context.trackingPoint,
-      });
+
+      if (context.shouldFit !== false) {
+        fitMapToContext(map, {
+          routes: features,
+          origin: context.origin,
+          destination: context.destination,
+          trackingPoint: context.trackingPoint,
+          bottomInset: context.bottomInset,
+        });
+      }
     },
     setTracking(pointFeature, trailFeature) {
       updateSource(map, "tracking-point", featureCollection(pointFeature ? [pointFeature] : []));
       updateSource(map, "tracking-trail", featureCollection(trailFeature ? [trailFeature] : []));
+    },
+    setUserLocation(point, options = {}) {
+      updateUserLocationMarker(userLocationMarker, point, options);
+    },
+    centerOnUser(point, options = {}) {
+      if (!Number.isFinite(point?.lng) || !Number.isFinite(point?.lat)) {
+        return;
+      }
+
+      resizeMap(map);
+      map.easeTo({
+        center: [point.lng, point.lat],
+        zoom: Number(options.zoom || APP_CONFIG.navigationCameraZoom),
+        pitch: Number(options.pitch || APP_CONFIG.navigationCameraPitch),
+        bearing: Number.isFinite(options.bearing) ? options.bearing : map.getBearing(),
+        offset: Array.isArray(options.offset) ? options.offset : [0, 0],
+        duration: Number(options.duration || APP_CONFIG.navigationCameraDurationMs),
+        essential: true,
+      });
+    },
+    onMapInteraction(handler) {
+      const safeHandler = () => {
+        handler?.();
+      };
+      const eventNames = ["dragstart", "zoomstart", "pitchstart", "rotatestart"];
+
+      eventNames.forEach((eventName) => {
+        map.on(eventName, safeHandler);
+      });
+
+      return () => {
+        eventNames.forEach((eventName) => {
+          map.off(eventName, safeHandler);
+        });
+      };
     },
     fitToContext(context) {
       resizeMap(map);
@@ -138,12 +178,13 @@ export async function createMapService({ containerId, riskZones }) {
 }
 
 function installBaseSources(map, riskZones) {
+  const labelAnchorLayerId = getLabelAnchorLayerId(map);
   map.addSource("risk-zones", {
     type: "geojson",
     data: riskZones,
   });
 
-  map.addLayer({
+  addLayerBeforeLabels(map, {
     id: "risk-zones-fill",
     type: "fill",
     source: "risk-zones",
@@ -161,9 +202,9 @@ function installBaseSources(map, riskZones) {
         0.12,
       ],
     },
-  });
+  }, labelAnchorLayerId);
 
-  map.addLayer({
+  addLayerBeforeLabels(map, {
     id: "risk-zones-line",
     type: "line",
     source: "risk-zones",
@@ -173,7 +214,7 @@ function installBaseSources(map, riskZones) {
       "line-opacity": 0.38,
       "line-dasharray": [3, 3.6],
     },
-  });
+  }, labelAnchorLayerId);
 
   map.addSource("routes", {
     type: "geojson",
@@ -181,7 +222,7 @@ function installBaseSources(map, riskZones) {
     data: featureCollection([]),
   });
 
-  map.addLayer({
+  addLayerBeforeLabels(map, {
     id: "routes-inactive-shadow",
     type: "line",
     source: "routes",
@@ -192,13 +233,13 @@ function installBaseSources(map, riskZones) {
     },
     paint: {
       "line-color": "rgba(64, 73, 88, 0.14)",
-      "line-width": 8.8,
-      "line-opacity": 0.48,
+      "line-width": 7.8,
+      "line-opacity": 0.42,
       "line-blur": 0.75,
     },
-  });
+  }, labelAnchorLayerId);
 
-  map.addLayer({
+  addLayerBeforeLabels(map, {
     id: "routes-inactive",
     type: "line",
     source: "routes",
@@ -209,12 +250,12 @@ function installBaseSources(map, riskZones) {
     },
     paint: {
       "line-color": "rgba(101, 112, 128, 0.5)",
-      "line-width": 4.3,
-      "line-opacity": 0.62,
+      "line-width": 3.7,
+      "line-opacity": 0.55,
     },
-  });
+  }, labelAnchorLayerId);
 
-  map.addLayer({
+  addLayerBeforeLabels(map, {
     id: "routes-active-shadow",
     type: "line",
     source: "routes",
@@ -225,13 +266,13 @@ function installBaseSources(map, riskZones) {
     },
     paint: {
       "line-color": "rgba(76, 142, 255, 0.2)",
-      "line-width": 15,
-      "line-opacity": 0.82,
+      "line-width": 12.4,
+      "line-opacity": 0.64,
       "line-blur": 1.05,
     },
-  });
+  }, labelAnchorLayerId);
 
-  map.addLayer({
+  addLayerBeforeLabels(map, {
     id: "routes-active-casing",
     type: "line",
     source: "routes",
@@ -242,12 +283,12 @@ function installBaseSources(map, riskZones) {
     },
     paint: {
       "line-color": "rgba(255, 255, 255, 0.96)",
-      "line-width": 10.2,
-      "line-opacity": 0.98,
+      "line-width": 8.5,
+      "line-opacity": 0.94,
     },
-  });
+  }, labelAnchorLayerId);
 
-  map.addLayer({
+  addLayerBeforeLabels(map, {
     id: "routes-active",
     type: "line",
     source: "routes",
@@ -258,12 +299,12 @@ function installBaseSources(map, riskZones) {
     },
     paint: {
       "line-gradient": ACTIVE_ROUTE_GRADIENT,
-      "line-width": 6.2,
-      "line-opacity": 0.98,
+      "line-width": 4.9,
+      "line-opacity": 0.95,
     },
-  });
+  }, labelAnchorLayerId);
 
-  map.addLayer({
+  addLayerBeforeLabels(map, {
     id: "routes-active-sheen",
     type: "line",
     source: "routes",
@@ -274,10 +315,10 @@ function installBaseSources(map, riskZones) {
     },
     paint: {
       "line-color": "rgba(255, 255, 255, 0.38)",
-      "line-width": 2.35,
-      "line-opacity": 0.92,
+      "line-width": 1.65,
+      "line-opacity": 0.78,
     },
-  });
+  }, labelAnchorLayerId);
 
   map.addSource("origin-point", {
     type: "geojson",
@@ -300,7 +341,7 @@ function installBaseSources(map, riskZones) {
     data: featureCollection([]),
   });
 
-  map.addLayer({
+  addLayerBeforeLabels(map, {
     id: "origin-halo",
     type: "circle",
     source: "origin-point",
@@ -308,9 +349,9 @@ function installBaseSources(map, riskZones) {
       "circle-radius": 13,
       "circle-color": "rgba(33, 42, 58, 0.16)",
     },
-  });
+  }, labelAnchorLayerId);
 
-  map.addLayer({
+  addLayerBeforeLabels(map, {
     id: "origin-point-layer",
     type: "circle",
     source: "origin-point",
@@ -320,9 +361,9 @@ function installBaseSources(map, riskZones) {
       "circle-stroke-color": "#1F2735",
       "circle-stroke-width": 1.8,
     },
-  });
+  }, labelAnchorLayerId);
 
-  map.addLayer({
+  addLayerBeforeLabels(map, {
     id: "destination-halo",
     type: "circle",
     source: "destination-point",
@@ -330,9 +371,9 @@ function installBaseSources(map, riskZones) {
       "circle-radius": 18,
       "circle-color": "rgba(78, 146, 255, 0.18)",
     },
-  });
+  }, labelAnchorLayerId);
 
-  map.addLayer({
+  addLayerBeforeLabels(map, {
     id: "destination-point-layer",
     type: "circle",
     source: "destination-point",
@@ -342,9 +383,9 @@ function installBaseSources(map, riskZones) {
       "circle-stroke-color": "#FFFFFF",
       "circle-stroke-width": 2.35,
     },
-  });
+  }, labelAnchorLayerId);
 
-  map.addLayer({
+  addLayerBeforeLabels(map, {
     id: "destination-point-inner",
     type: "circle",
     source: "destination-point",
@@ -352,9 +393,9 @@ function installBaseSources(map, riskZones) {
       "circle-radius": 3.2,
       "circle-color": "#F5FBFF",
     },
-  });
+  }, labelAnchorLayerId);
 
-  map.addLayer({
+  addLayerBeforeLabels(map, {
     id: "tracking-trail-shadow",
     type: "line",
     source: "tracking-trail",
@@ -364,13 +405,13 @@ function installBaseSources(map, riskZones) {
     },
     paint: {
       "line-color": "rgba(81, 207, 255, 0.18)",
-      "line-width": 12,
-      "line-opacity": 0.72,
+      "line-width": 9.2,
+      "line-opacity": 0.54,
       "line-blur": 1.15,
     },
-  });
+  }, labelAnchorLayerId);
 
-  map.addLayer({
+  addLayerBeforeLabels(map, {
     id: "tracking-trail",
     type: "line",
     source: "tracking-trail",
@@ -380,13 +421,13 @@ function installBaseSources(map, riskZones) {
     },
     paint: {
       "line-gradient": TRACKING_ROUTE_GRADIENT,
-      "line-width": 3.7,
-      "line-opacity": 0.92,
+      "line-width": 2.9,
+      "line-opacity": 0.88,
       "line-dasharray": [0.75, 1.45],
     },
-  });
+  }, labelAnchorLayerId);
 
-  map.addLayer({
+  addLayerBeforeLabels(map, {
     id: "tracking-trail-highlight",
     type: "line",
     source: "tracking-trail",
@@ -396,42 +437,44 @@ function installBaseSources(map, riskZones) {
     },
     paint: {
       "line-color": "rgba(255, 255, 255, 0.3)",
-      "line-width": 1.6,
-      "line-opacity": 0.88,
+      "line-width": 1.15,
+      "line-opacity": 0.68,
     },
-  });
+  }, labelAnchorLayerId);
 
-  map.addLayer({
+  addLayerBeforeLabels(map, {
     id: "tracking-point-halo",
     type: "circle",
     source: "tracking-point",
     paint: {
-      "circle-radius": 18,
-      "circle-color": "rgba(109, 220, 255, 0.18)",
+      "circle-radius": 11,
+      "circle-color": "rgba(109, 220, 255, 0.1)",
     },
-  });
+  }, labelAnchorLayerId);
 
-  map.addLayer({
+  addLayerBeforeLabels(map, {
     id: "tracking-point-layer",
     type: "circle",
     source: "tracking-point",
     paint: {
-      "circle-radius": 7.2,
+      "circle-radius": 3.4,
       "circle-color": "#76DAFF",
       "circle-stroke-color": "#FFFFFF",
-      "circle-stroke-width": 2.4,
+      "circle-stroke-width": 1.1,
+      "circle-opacity": 0.3,
     },
-  });
+  }, labelAnchorLayerId);
 
-  map.addLayer({
+  addLayerBeforeLabels(map, {
     id: "tracking-point-inner",
     type: "circle",
     source: "tracking-point",
     paint: {
-      "circle-radius": 2.7,
+      "circle-radius": 1.35,
       "circle-color": "#FFFFFF",
+      "circle-opacity": 0.46,
     },
-  });
+  }, labelAnchorLayerId);
 }
 
 function tuneBaseMapStyle(map) {
@@ -546,7 +589,7 @@ function fitMapToContext(map, context) {
 
   if (!bounds.isEmpty()) {
     map.fitBounds(bounds, {
-      padding: getMapPadding(),
+      padding: getMapPadding(context.bottomInset),
       duration: 720,
       maxZoom: 15.6,
     });
@@ -704,14 +747,14 @@ function resizeMap(map) {
   }
 }
 
-function getMapPadding() {
+function getMapPadding(bottomInset = 0) {
   const isCompactViewport = globalThis.matchMedia?.("(max-width: 739px)").matches ?? false;
 
   if (isCompactViewport) {
     return {
       top: 52,
       right: 18,
-      bottom: 52,
+      bottom: 52 + Math.max(0, Number(bottomInset || 0)),
       left: 18,
     };
   }
@@ -719,7 +762,7 @@ function getMapPadding() {
   return {
     top: 82,
     right: 28,
-    bottom: 82,
+    bottom: 82 + Math.max(0, Number(bottomInset || 0)),
     left: 28,
   };
 }
@@ -742,4 +785,65 @@ function setPaintIfLayerExists(map, layerId, property, value) {
   } catch (error) {
     console.warn(`No pude ajustar ${property} en ${layerId}.`, error);
   }
+}
+
+function addLayerBeforeLabels(map, layerDefinition, anchorLayerId) {
+  if (anchorLayerId) {
+    map.addLayer(layerDefinition, anchorLayerId);
+    return;
+  }
+
+  map.addLayer(layerDefinition);
+}
+
+function getLabelAnchorLayerId(map) {
+  return map
+    .getStyle()
+    ?.layers?.find((layer) => layer.type === "symbol" && /name|place|water_name|road_oneway/.test(layer.id))
+    ?.id;
+}
+
+function createUserLocationMarker(map) {
+  const element = globalThis.document.createElement("div");
+  const glyph = globalThis.document.createElement("div");
+
+  element.className = "user-bike-marker";
+  glyph.className = "user-bike-marker__glyph";
+  element.append(glyph);
+
+  const marker = new globalThis.maplibregl.Marker({
+    element,
+    anchor: "center",
+    rotationAlignment: "map",
+    pitchAlignment: "map",
+  }).setLngLat([APP_CONFIG.center.lng, APP_CONFIG.center.lat]);
+
+  marker.addTo(map);
+  element.hidden = true;
+
+  return {
+    marker,
+    element,
+    glyph,
+  };
+}
+
+function updateUserLocationMarker(userLocationMarker, point, options = {}) {
+  if (!userLocationMarker?.marker) {
+    return;
+  }
+
+  if (!Number.isFinite(point?.lng) || !Number.isFinite(point?.lat)) {
+    userLocationMarker.element.hidden = true;
+    return;
+  }
+
+  userLocationMarker.marker.setLngLat([point.lng, point.lat]);
+  userLocationMarker.element.hidden = false;
+  userLocationMarker.element.classList.toggle("is-paused", Boolean(options.paused));
+  userLocationMarker.element.classList.toggle("is-off-route", Boolean(options.offRoute));
+  userLocationMarker.glyph.style.setProperty(
+    "--bike-rotation",
+    `${Number.isFinite(options.heading) ? Number(options.heading) : 0}deg`
+  );
 }

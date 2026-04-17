@@ -1,0 +1,31 @@
+<svg width="64" height="64" viewBox="0 0 64 64" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <linearGradient id="bikeBg" x1="12" y1="10" x2="52" y2="54" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#101A27"/>
+      <stop offset="1" stop-color="#152337"/>
+    </linearGradient>
+    <linearGradient id="bikeAccent" x1="18" y1="18" x2="48" y2="48" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#8AD8FF"/>
+      <stop offset="1" stop-color="#58B9FF"/>
+    </linearGradient>
+    <filter id="softHalo" x="0" y="0" width="64" height="64" filterUnits="userSpaceOnUse" color-interpolation-filters="sRGB">
+      <feGaussianBlur stdDeviation="5"/>
+    </filter>
+  </defs>
+
+  <circle cx="32" cy="32" r="22" fill="#67C9FF" fill-opacity="0.22" filter="url(#softHalo)"/>
+  <circle cx="32" cy="32" r="19.5" fill="url(#bikeBg)" stroke="#FFFFFF" stroke-opacity="0.7" stroke-width="1.5"/>
+  <circle cx="32" cy="32" r="17.5" fill="url(#bikeBg)" stroke="#FFFFFF" stroke-opacity="0.12" stroke-width="1"/>
+
+  <g stroke="url(#bikeAccent)" stroke-linecap="round" stroke-linejoin="round" stroke-width="2.4">
+    <circle cx="23.2" cy="38.6" r="6.6"/>
+    <circle cx="41.2" cy="38.6" r="6.6"/>
+    <path d="M23.2 38.6L29.4 27.4L35 38.6H41.2"/>
+    <path d="M29.4 27.4H37.2"/>
+    <path d="M33.1 22.8L37.2 27.4"/>
+    <path d="M31.4 31.8H37.9"/>
+    <path d="M27.6 31.8H31.4"/>
+  </g>
+
+  <circle cx="32.4" cy="20.6" r="2.3" fill="#D7F3FF"/>
+</svg>

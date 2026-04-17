@@ -2,6 +2,16 @@ import { getActiveEngine } from "./engine/engine.js";
 import { getPlaceMemoryTagLabel } from "./data/place_memory_schema.js";
 import { exportCashEntriesExcel, exportCashEntriesPdf } from "./services/export_service.js";
 import { geocodeAddress, reverseGeocode } from "./services/geocoding_service.js";
+import {
+  buildLiveNavigationMessage,
+  computeNavigationSnapshot,
+  getLocationErrorMessage,
+  shouldFollowWithCamera,
+  shouldRecalculateRoute,
+  startLiveLocation,
+  stopLiveLocation,
+  updateUserLocation,
+} from "./services/live_navigation_service.js";
 import { createMapService } from "./services/map_service.js";
 import {
   buildPlaceMemoryEntry,
@@ -44,7 +54,7 @@ import {
   sumBy,
 } from "./utils/format_utils.js";
 import { readJsonStorage, writeJsonStorage } from "./utils/storage_utils.js";
-import { getPointToRouteDistanceMeters, haversineDistanceMeters, isValidPoint } from "./utils/geo_utils.js";
+import { haversineDistanceMeters, isValidPoint } from "./utils/geo_utils.js";
 import {
   calculateTripDelta,
   formatTripDelta,
@@ -56,6 +66,7 @@ import {
 
 const state = {
   mapService: null,
+  mapInteractionCleanup: null,
   selectedStrategy: readJsonStorage(APP_CONFIG.storageKeys.lastStrategy, "balanced"),
   destinationHistory: normalizeDestinationHistory(
     readJsonStorage(APP_CONFIG.storageKeys.destinationHistory, readJsonStorage("riderHub.addressHistory.v1", []))
@@ -85,6 +96,8 @@ const state = {
   trackingWatchId: 0,
   sessionPersistTimeoutId: 0,
   autoRecalcTimeoutId: 0,
+  ignoreMapGestureUntil: 0,
+  routeRecalcInProgress: false,
   deviationAlert: null,
   lastSearchInput: "",
   isBusy: false,
@@ -108,6 +121,18 @@ const elements = {
   historyAnchor: document.querySelector("#history-anchor"),
   cashAnchor: document.querySelector("#cash-anchor"),
   mapStatus: document.querySelector("#map-status"),
+  navigationHud: document.querySelector("#navigation-hud"),
+  navigationHudState: document.querySelector("#navigation-hud-state"),
+  navigationHudTitle: document.querySelector("#navigation-hud-title"),
+  navigationHudCopy: document.querySelector("#navigation-hud-copy"),
+  navigationRemainingTime: document.querySelector("#navigation-remaining-time"),
+  navigationRemainingDistance: document.querySelector("#navigation-remaining-distance"),
+  navigationProgressPill: document.querySelector("#navigation-progress-pill"),
+  navigationProgressBar: document.querySelector("#navigation-progress-bar"),
+  centerOnUserButton: document.querySelector("#center-on-user-button"),
+  pauseNavigationButton: document.querySelector("#pause-navigation-button"),
+  hudRecalculateButton: document.querySelector("#hud-recalculate-button"),
+  finishNavigationButton: document.querySelector("#finish-navigation-button"),
   interpretedAddress: document.querySelector("#interpreted-address"),
   addressStateBadge: document.querySelector("#address-state-badge"),
   modeChips: Array.from(document.querySelectorAll("[data-trip-stage]")),
@@ -199,6 +224,9 @@ async function init() {
       containerId: "map",
       riskZones: getRiskZones(),
     });
+    state.mapInteractionCleanup = state.mapService.onMapInteraction(() => {
+      handleMapNavigationGesture();
+    });
 
     syncMapLayers();
     scheduleMapResizeBurst();
@@ -275,6 +303,12 @@ function bindEvents() {
   elements.primaryActionButton.addEventListener("click", handlePrimaryAction);
   elements.showAlternativeButton.addEventListener("click", handleShowAlternativeRoute);
   elements.openExternalNavButton.addEventListener("click", openExternalNavigation);
+  elements.centerOnUserButton.addEventListener("click", centerOnUser);
+  elements.pauseNavigationButton.addEventListener("click", toggleLiveNavigationPause);
+  elements.hudRecalculateButton.addEventListener("click", () => {
+    void handleRecalculateRoute("manual");
+  });
+  elements.finishNavigationButton.addEventListener("click", finishActiveTrip);
   elements.recalculateRouteButton.addEventListener("click", () => {
     void handleRecalculateRoute("manual");
   });
@@ -518,6 +552,8 @@ async function calculateRoutesForCurrentDestination(source, originOverride = nul
   }
 
   const routeOrigin = originOverride || state.origin;
+  const previousRouteId = state.activeTrip?.routeId || state.activeRouteId;
+  const previousStrategy = state.activeTrip?.strategy || getActiveRoute()?.displayStrategy || "";
 
   setInlineStatus(
     elements.mapStatus,
@@ -571,17 +607,39 @@ async function calculateRoutesForCurrentDestination(source, originOverride = nul
     }
 
     synchronizeActiveTripWithCurrentRoute();
+
+    if (state.activeTrip && (source === "manual-recalc" || source === "auto-recalc")) {
+      state.activeTrip.liveGuidance = buildLiveNavigationMessage({
+        recalculated: true,
+        offRoute: Boolean(state.deviationAlert),
+        routeChanged: previousRouteId !== state.recommendedRouteId,
+        recommendedStrategy: getSuggestedRoute()?.displayStrategy || getSuggestedRoute()?.strategy || "",
+        currentStrategy: previousStrategy,
+      });
+    }
+
     clearDeviationAlert();
+    state.routeRecalcInProgress = false;
     state.routeError = "";
     syncMapLayers();
+
+    if (state.activeTrip?.currentLocation && state.activeTrip.followUser) {
+      centerOnUser({ silent: true, force: true });
+    }
+
     renderOperationalPanel();
 
     if (source === "strategy") {
+      setInlineStatus(elements.mapStatus, "Ruta actualizada con la nueva prioridad elegida.", "success");
       showToast(`Ruta ${buildStrategyLabel(state.selectedStrategy).toLowerCase()} actualizada.`, "success");
     } else if (source === "manual-recalc") {
+      setInlineStatus(elements.mapStatus, "Ruta recalculada desde tu posicion actual.", "success");
       showToast("Ruta recalculada desde tu posicion actual.", "success");
     } else if (source === "auto-recalc") {
+      setInlineStatus(elements.mapStatus, "Ruta actualizada automaticamente por desvio.", "success");
       showToast("Ruta recalculada automaticamente por desvio.", "success");
+    } else {
+      setInlineStatus(elements.mapStatus, "Ruta lista para navegar.", "success");
     }
   } catch (error) {
     console.error(error);
@@ -589,6 +647,7 @@ async function calculateRoutesForCurrentDestination(source, originOverride = nul
     state.activeRouteId = "";
     state.recommendedRouteId = "";
     state.activeProviderNote = "";
+    state.routeRecalcInProgress = false;
     state.routeError = "No pude calcular una ruta usable en este momento.";
     syncMapLayers();
     renderOperationalPanel();
@@ -644,6 +703,11 @@ async function handlePrimaryAction() {
 
   if (uiState.primaryActionKind === "suggested") {
     selectSuggestedRoute();
+    return;
+  }
+
+  if (uiState.primaryActionKind === "recalculate") {
+    await handleRecalculateRoute("manual");
     return;
   }
 
@@ -724,6 +788,9 @@ function syncMapLayers() {
     return;
   }
 
+  const activeLocation = state.activeTrip?.currentLocation || null;
+  const trackingFeature = activeLocation ? buildPointFeature(activeLocation, { kind: "tracking" }) : null;
+
   state.mapService.setOrigin(buildPointFeature(state.origin, { kind: "origin" }));
   state.mapService.setDestination(
     state.destination ? buildPointFeature(state.destination.coordinates, { kind: "destination" }) : null
@@ -731,12 +798,16 @@ function syncMapLayers() {
   state.mapService.setRoutes(state.routes, state.activeRouteId, {
     origin: state.origin,
     destination: state.destination,
-    trackingPoint: state.activeTrip?.currentLocation || null,
+    trackingPoint: activeLocation,
+    shouldFit: !state.activeTrip,
+    bottomInset: getNavigationHudInset(),
   });
-  state.mapService.setTracking(
-    state.activeTrip?.currentLocation ? buildPointFeature(state.activeTrip.currentLocation, { kind: "tracking" }) : null,
-    buildTrackingTrailFeature()
-  );
+  state.mapService.setTracking(trackingFeature, buildTrackingTrailFeature());
+  state.mapService.setUserLocation(activeLocation, {
+    heading: activeLocation?.heading,
+    paused: Boolean(state.activeTrip?.liveLocationPaused),
+    offRoute: Boolean(state.deviationAlert),
+  });
   queueMapResize();
 }
 
@@ -745,15 +816,234 @@ function syncTrackingLayersOnly() {
     return;
   }
 
+  const activeLocation = state.activeTrip?.currentLocation || null;
   state.mapService.setTracking(
-    state.activeTrip?.currentLocation ? buildPointFeature(state.activeTrip.currentLocation, { kind: "tracking" }) : null,
+    activeLocation ? buildPointFeature(activeLocation, { kind: "tracking" }) : null,
     buildTrackingTrailFeature()
   );
+  state.mapService.setUserLocation(activeLocation, {
+    heading: activeLocation?.heading,
+    paused: Boolean(state.activeTrip?.liveLocationPaused),
+    offRoute: Boolean(state.deviationAlert),
+  });
+}
+
+function centerOnUser(options = {}) {
+  const currentPoint = options.point || state.activeTrip?.currentLocation;
+
+  if (!state.mapService || !isValidPoint(currentPoint)) {
+    if (!options.silent) {
+      showToast("Todavia no tengo una posicion confiable para recentrar.", "warning");
+    }
+    return false;
+  }
+
+  const safeBearing = Number.isFinite(currentPoint.heading)
+    ? Number(currentPoint.heading)
+    : undefined;
+  const verticalOffset = -Math.round(Math.min(148, Math.max(72, getNavigationHudInset() * 0.34)));
+
+  state.ignoreMapGestureUntil = Date.now() + APP_CONFIG.navigationCameraDurationMs + 220;
+  state.mapService.centerOnUser(currentPoint, {
+    bearing: safeBearing,
+    offset: [0, verticalOffset],
+    duration: options.force ? Math.max(220, APP_CONFIG.navigationCameraDurationMs - 180) : APP_CONFIG.navigationCameraDurationMs,
+  });
+
+  if (state.activeTrip) {
+    state.activeTrip.followUser = true;
+    state.activeTrip.lastCenteredAt = new Date().toISOString();
+    state.activeTrip.lastCenteredPoint = { ...currentPoint };
+  }
+
+  if (!options.silent) {
+    showToast("Mapa recentrado en tu posicion.", "success");
+  }
+
+  return true;
+}
+
+function toggleLiveNavigationPause() {
+  if (!state.activeTrip) {
+    return;
+  }
+
+  state.activeTrip.liveLocationPaused = !state.activeTrip.liveLocationPaused;
+
+  if (state.activeTrip.liveLocationPaused) {
+    stopTrackingWatch();
+    cancelAutoRecalc();
+    state.activeTrip.followUser = false;
+    state.activeTrip.liveGuidance = "Seguimiento en pausa. Conservando la ultima posicion confiable.";
+    setInlineStatus(elements.mapStatus, "Seguimiento pausado. Mantengo la ultima posicion confiable.", "warning");
+    showToast("Seguimiento en pausa.", "warning");
+  } else {
+    state.activeTrip.liveGuidance = "Ruta actual todavia conveniente.";
+    setInlineStatus(elements.mapStatus, "Seguimiento reanudado desde tu posicion actual.", "success");
+    startTrackingWatch();
+    centerOnUser({ silent: true, force: true });
+    showToast("Seguimiento reanudado.", "success");
+  }
+
+  syncTrackingLayersOnly();
+  renderOperationalPanel();
+}
+
+function handleMapNavigationGesture() {
+  if (!state.activeTrip || state.activeTrip.liveLocationPaused) {
+    return;
+  }
+
+  if (Date.now() < Number(state.ignoreMapGestureUntil || 0)) {
+    return;
+  }
+
+  const wasFollowing = state.activeTrip.followUser;
+  state.activeTrip.followUser = false;
+
+  if (wasFollowing && !state.deviationAlert && !state.routeRecalcInProgress) {
+    state.activeTrip.liveGuidance = "Mapa libre. Toca Recentrar para volver a seguir tu avance.";
+  }
+
+  renderOperationalPanel();
+}
+
+function maybeFollowUserOnMap(currentPoint) {
+  if (!state.activeTrip || state.activeTrip.liveLocationPaused) {
+    return;
+  }
+
+  const shouldCenter = shouldFollowWithCamera({
+    followUser: state.activeTrip.followUser,
+    previousCenteredPoint: state.activeTrip.lastCenteredPoint,
+    currentPoint,
+    lastCenteredAt: state.activeTrip.lastCenteredAt,
+  });
+
+  if (!shouldCenter) {
+    return;
+  }
+
+  centerOnUser({
+    point: currentPoint,
+    silent: true,
+    force: true,
+  });
+}
+
+function getNavigationHudInset() {
+  const shouldReserveSpace = Boolean(getActiveRoute() || state.activeTrip);
+
+  if (!shouldReserveSpace) {
+    return 0;
+  }
+
+  const measuredHeight = Number(elements.navigationHud?.offsetHeight || 0);
+
+  if (measuredHeight > 0) {
+    return measuredHeight + 28;
+  }
+
+  return window.matchMedia("(max-width: 739px)").matches ? 216 : 196;
+}
+
+function renderNavigationHud(uiState, activeRoute) {
+  const activeTrip = state.activeTrip;
+  const snapshot = activeTrip?.navigationSnapshot || computeNavigationSnapshot(activeRoute, activeTrip?.currentLocation);
+  const stageTone =
+    uiState.modeStage === "off-route"
+      ? "warning"
+      : uiState.modeStage === "recalculating"
+        ? "accent"
+        : uiState.badgeTone === "danger"
+          ? "danger"
+          : uiState.badgeTone === "warning"
+            ? "warning"
+            : "success";
+  const progressRatio = activeTrip ? snapshot.progressRatio || 0 : activeRoute ? 0 : 0;
+  const remainingDurationLabel = activeTrip
+    ? snapshot.remainingDurationSeconds > 0
+      ? formatDuration(snapshot.remainingDurationSeconds)
+      : "Calculando"
+    : activeRoute
+      ? formatDuration(activeRoute.durationSeconds)
+      : "Sin dato";
+  const remainingDistanceLabel = activeTrip
+    ? snapshot.remainingDistanceMeters > 15
+      ? formatDistance(snapshot.remainingDistanceMeters)
+      : "Muy cerca"
+    : activeRoute
+      ? formatDistance(activeRoute.distanceMeters)
+      : "Sin dato";
+  const title = activeTrip
+    ? `Hacia ${compactDestinationLabel(state.destination?.label || state.lastSearchInput || "destino")}`
+    : activeRoute
+      ? `${buildStrategyLabel(activeRoute.displayStrategy || activeRoute.strategy)} lista para salir`
+      : "Listo para navegar";
+  const progressText = activeTrip
+    ? `${Math.round(progressRatio * 100)}% hecho`
+    : activeRoute
+      ? "Lista para salir"
+      : "En preparacion";
+  const copy = activeTrip
+    ? activeTrip.liveGuidance || buildNavigationReference()
+    : activeRoute?.recommendation || activeRoute?.baseSummary || "Busca una ruta para activar la navegacion.";
+
+  elements.navigationHud.hidden = !activeRoute && !activeTrip;
+  elements.navigationHudState.textContent = buildNavigationStateLabel(uiState.modeStage, activeTrip?.liveLocationPaused);
+  elements.navigationHudState.className = `tiny-pill is-${stageTone}`;
+  elements.navigationHudTitle.textContent = title;
+  elements.navigationHudCopy.textContent = copy;
+  elements.navigationRemainingTime.textContent = remainingDurationLabel;
+  elements.navigationRemainingDistance.textContent = remainingDistanceLabel;
+  elements.navigationProgressPill.textContent = progressText;
+  elements.navigationProgressBar.style.width = `${Math.max(0, Math.min(100, progressRatio * 100))}%`;
+  elements.centerOnUserButton.disabled = !activeTrip?.currentLocation;
+  elements.hudRecalculateButton.disabled =
+    !activeTrip?.currentLocation || !state.destination || Boolean(state.routeRecalcInProgress);
+  elements.pauseNavigationButton.disabled = !activeTrip;
+  elements.pauseNavigationButton.textContent = activeTrip?.liveLocationPaused ? "Reanudar" : "Pausar";
+  elements.finishNavigationButton.disabled = !activeTrip;
+}
+
+function buildNavigationReference() {
+  const parts = [
+    state.destinationProfile?.streetName || state.addressAnalysis?.streetName || "",
+    state.destinationProfile?.zoneLabel || "",
+  ].filter(Boolean);
+
+  if (parts.length) {
+    return `Referencia principal: ${parts.join(" | ")}`;
+  }
+
+  return `Referencia principal: ${compactDestinationLabel(state.destination?.label || "Neuquen Capital")}`;
+}
+
+function buildNavigationStateLabel(stage, isPaused = false) {
+  if (isPaused) {
+    return "Pausada";
+  }
+
+  if (stage === "recalculating") {
+    return "Recalculando";
+  }
+
+  if (stage === "off-route") {
+    return "Desvio";
+  }
+
+  if (stage === "tracking") {
+    return "Navegando";
+  }
+
+  return "Ruta lista";
 }
 
 function renderOperationalPanel() {
   const uiState = deriveUiState();
   const activeRoute = getActiveRoute();
+  const navigationSnapshot =
+    state.activeTrip?.navigationSnapshot || computeNavigationSnapshot(activeRoute, state.activeTrip?.currentLocation);
   const elapsedSeconds = state.activeTrip ? getElapsedTripSeconds(state.activeTrip) : 0;
 
   elements.appStatusPill.textContent = uiState.headerBadge;
@@ -787,16 +1077,16 @@ function renderOperationalPanel() {
   elements.routeProviderNote.textContent = state.activeProviderNote || buildProviderLabel(state.activeProvider);
   elements.tripStrip.hidden = !state.activeTrip;
   elements.tripStatusTitle.textContent = state.activeTrip
-    ? `En viaje hacia ${compactDestinationLabel(state.destination?.label || state.lastSearchInput || "destino")}`
+    ? `Navegando hacia ${compactDestinationLabel(state.destination?.label || state.lastSearchInput || "destino")}`
     : "Sin viaje activo";
   elements.tripStatusCopy.textContent = state.activeTrip
-    ? `${buildStrategyLabel(state.activeTrip.strategy).toLowerCase()} | aprendiendo en ${state.destinationProfile?.zoneLabel || "esta zona"}`
+    ? `${state.activeTrip.liveGuidance || "Ruta actual todavia conveniente."} | ${buildNavigationReference()}`
     : "Cuando inicies una ruta, comparo estimado vs real y lo guardo para futuras recomendaciones.";
   elements.tripEstimatedPill.textContent = state.activeTrip
-    ? `Estimado: ${formatDuration(state.activeTrip.estimatedDurationSeconds)}`
+    ? `Restante: ${navigationSnapshot.remainingDurationSeconds > 0 ? formatDuration(navigationSnapshot.remainingDurationSeconds) : "calculando"}`
     : "Estimado: sin dato";
   elements.tripDeltaPill.textContent = state.activeTrip
-    ? `Actual: ${formatDuration(elapsedSeconds)}`
+    ? `${formatTripDelta(state.activeTrip.delta)} | ${navigationSnapshot.remainingDistanceMeters > 0 ? formatDistance(navigationSnapshot.remainingDistanceMeters) : "Sin dato"}`
     : "Delta: pendiente";
   elements.deviationAlert.hidden = !state.deviationAlert;
   elements.deviationAlertTitle.textContent = state.deviationAlert?.title || "Sigues en ruta";
@@ -823,6 +1113,7 @@ function renderOperationalPanel() {
     button.disabled = Boolean(state.activeTrip || state.pendingTripReview);
   });
 
+  renderNavigationHud(uiState, activeRoute);
   renderPlaceMemoryComposer();
   renderPlaceMemoryList();
   renderReasonList(buildReasonItems());
@@ -924,20 +1215,63 @@ function deriveUiState() {
     };
   }
 
+  if (stage === "recalculating") {
+    return {
+      ...base,
+      headerBadge: "Recalculando",
+      addressBadge: "Recalculando",
+      badgeTone: "warning",
+      modeStage: "recalculating",
+      resolutionStatus: "Recalculando desde tu posicion",
+      operationalRisk: activeRoute?.operationalRisk?.overallLabel || "En revision",
+      recommendedRoute: currentLabel,
+      recommendationTitle: "Buscando mejor opcion desde donde vas",
+      recommendationCopy:
+        state.activeTrip?.liveGuidance ||
+        "Estoy evaluando una nueva ruta sin perder el hilo del viaje.",
+      primaryActionLabel: "Finalizar viaje",
+      primaryActionKind: "finish-trip",
+      primaryActionDisabled: false,
+    };
+  }
+
+  if (stage === "off-route") {
+    return {
+      ...base,
+      headerBadge: "Desvio",
+      addressBadge: "Desvio",
+      badgeTone: "warning",
+      modeStage: "off-route",
+      resolutionStatus: "Desvio detectado",
+      operationalRisk: activeRoute?.operationalRisk?.overallLabel || "Precaucion",
+      recommendedRoute: currentLabel,
+      recommendationTitle: "Conviene revisar desde tu posicion actual",
+      recommendationCopy:
+        state.deviationAlert?.copy ||
+        state.activeTrip?.liveGuidance ||
+        "Puedo recalcular desde la calle en la que estas ahora.",
+      primaryActionLabel: "Recalcular",
+      primaryActionKind: "recalculate",
+      primaryActionDisabled: false,
+    };
+  }
+
   if (stage === "tracking") {
     return {
       ...base,
-      headerBadge: "En viaje",
-      addressBadge: "Siguiendo",
-      badgeTone: "success",
+      headerBadge: state.activeTrip?.liveLocationPaused ? "Pausada" : "En viaje",
+      addressBadge: state.activeTrip?.liveLocationPaused ? "Pausada" : "Siguiendo",
+      badgeTone: state.activeTrip?.liveLocationPaused ? "warning" : "success",
       modeStage: "tracking",
-      resolutionStatus: "Seguimiento activo",
+      resolutionStatus: state.activeTrip?.liveLocationPaused ? "Seguimiento en pausa" : "Seguimiento activo",
       operationalRisk: activeRoute?.operationalRisk?.overallLabel || "Sin evaluar",
       recommendedRoute: currentLabel,
       recommendationTitle: "Viaje en curso",
-      recommendationCopy: `Estoy comparando ${formatDuration(
-        activeRoute?.durationSeconds || 0
-      )} estimados contra el tiempo real para aprender de este destino.`,
+      recommendationCopy:
+        state.activeTrip?.liveGuidance ||
+        `Estoy comparando ${formatDuration(
+          activeRoute?.durationSeconds || 0
+        )} estimados contra el tiempo real para aprender de este destino.`,
       primaryActionLabel: "Finalizar viaje",
       primaryActionKind: "finish-trip",
       primaryActionDisabled: false,
@@ -947,11 +1281,11 @@ function deriveUiState() {
   if (stage === "closing") {
     return {
       ...base,
-      headerBadge: "Cierre",
+      headerBadge: "Finalizado",
       addressBadge: "Guardar",
       badgeTone: "warning",
       modeStage: "closing",
-      resolutionStatus: "Cierre de viaje",
+      resolutionStatus: "Viaje finalizado",
       operationalRisk: activeRoute?.operationalRisk?.overallLabel || "Sin evaluar",
       recommendedRoute: currentLabel,
       recommendationTitle: "Falta cerrar este viaje",
@@ -1032,6 +1366,16 @@ function deriveUiState() {
 }
 
 function getOperationalStage() {
+  const activeRoute = getActiveRoute();
+
+  if (state.activeTrip && state.routeRecalcInProgress) {
+    return "recalculating";
+  }
+
+  if (state.activeTrip && state.deviationAlert) {
+    return "off-route";
+  }
+
   if (state.isBusy) {
     return "interpreting";
   }
@@ -1047,8 +1391,6 @@ function getOperationalStage() {
   if (!state.destination && state.addressAnalysis?.status === "doubtful") {
     return "doubtful";
   }
-
-  const activeRoute = getActiveRoute();
 
   if (state.activeTrip && activeRoute) {
     return "tracking";
@@ -1454,14 +1796,37 @@ function startActiveTrip() {
         riskLabel: route.operationalRisk?.overallLabel,
       })),
   });
-  state.activeTrip.currentLocation = !state.origin.isApproximate ? { ...state.origin, capturedAt: new Date().toISOString() } : null;
+  state.activeTrip.followUser = true;
+  state.activeTrip.liveLocationPaused = false;
+  state.activeTrip.lastCenteredAt = "";
+  state.activeTrip.lastCenteredPoint = null;
+  state.activeTrip.liveGuidance = "Ruta lista para navegar desde tu posicion actual.";
+  state.activeTrip.currentLocation = !state.origin.isApproximate
+    ? updateUserLocation(
+        null,
+        {
+          longitude: state.origin.lng,
+          latitude: state.origin.lat,
+          accuracy: Number(state.origin.accuracy || 18),
+          speed: 0,
+          heading: Number.NaN,
+        },
+        activeRoute
+      )
+    : null;
   state.activeTrip.trackPoints = state.activeTrip.currentLocation ? [{ ...state.activeTrip.currentLocation }] : [];
   state.activeTrip.lastAutoRecalcAt = "";
   state.activeTrip.delta = calculateTripDelta(state.activeTrip.estimatedDurationSeconds, 0);
+  state.activeTrip.navigationSnapshot = computeNavigationSnapshot(activeRoute, state.activeTrip.currentLocation);
+  state.activeTrip.liveGuidance = buildLiveNavigationMessage({
+    currentStrategy: state.activeTrip.strategy,
+  });
   startTrackingWatch();
   startTripTicker();
   clearDeviationAlert();
-  syncTrackingLayersOnly();
+  syncMapLayers();
+  centerOnUser({ silent: true, force: true });
+  setInlineStatus(elements.mapStatus, "Navegacion activa. Voy siguiendo tu ubicacion en tiempo real.", "success");
   renderOperationalPanel();
   showToast("Seguimiento iniciado. Voy a comparar estimado vs real.", "success");
 }
@@ -1473,11 +1838,13 @@ function finishActiveTrip() {
 
   state.pendingTripReview = stopTripTimer(state.activeTrip);
   state.activeTrip = null;
+  state.routeRecalcInProgress = false;
   stopTrackingWatch();
   stopTripTicker();
   cancelAutoRecalc();
   clearDeviationAlert();
   syncTrackingLayersOnly();
+  setInlineStatus(elements.mapStatus, "Viaje finalizado. Falta cerrar el feedback breve.", "success");
   renderOperationalPanel();
   openPostTripDialog();
 }
@@ -1597,6 +1964,7 @@ function synchronizeActiveTripWithCurrentRoute() {
     routeRiskLabel: activeRoute.operationalRisk?.routeRisk,
     operationalRiskLabel: activeRoute.operationalRisk?.overallLabel,
     riskScore: activeRoute.operationalRisk?.score || 0,
+    navigationSnapshot: computeNavigationSnapshot(activeRoute, state.activeTrip.currentLocation),
     alternatives: getSortedRoutes()
       .filter((route) => route.id !== activeRoute.id)
       .slice(0, 4)
@@ -1612,30 +1980,34 @@ function synchronizeActiveTripWithCurrentRoute() {
 }
 
 function startTrackingWatch() {
-  if (!navigator.geolocation) {
+  if (!state.activeTrip || state.activeTrip.liveLocationPaused) {
     return;
   }
 
   stopTrackingWatch();
 
-  state.trackingWatchId = navigator.geolocation.watchPosition(
-    (position) => {
-      handleTrackingPosition(position);
-    },
-    (error) => {
-      console.warn("No pude actualizar seguimiento GPS.", error);
-    },
-    {
-      enableHighAccuracy: true,
-      maximumAge: 3500,
-      timeout: 12000,
-    }
-  );
+  try {
+    state.trackingWatchId = startLiveLocation({
+      onPosition: (position) => {
+        handleTrackingPosition(position);
+      },
+      onError: (error) => {
+        const message = getLocationErrorMessage(error);
+        console.warn("No pude actualizar seguimiento GPS.", error);
+        setInlineStatus(elements.mapStatus, message, "warning");
+        showToast(message, "warning");
+      },
+    });
+  } catch (error) {
+    const message = error.message || "No pude iniciar la ubicacion en tiempo real.";
+    setInlineStatus(elements.mapStatus, message, "warning");
+    showToast(message, "warning");
+  }
 }
 
 function stopTrackingWatch() {
-  if (state.trackingWatchId && navigator.geolocation) {
-    navigator.geolocation.clearWatch(state.trackingWatchId);
+  if (state.trackingWatchId) {
+    stopLiveLocation(state.trackingWatchId);
     state.trackingWatchId = 0;
   }
 }
@@ -1645,20 +2017,40 @@ function handleTrackingPosition(position) {
     return;
   }
 
-  const nextPoint = {
-    lng: position.coords.longitude,
-    lat: position.coords.latitude,
-    accuracy: Number(position.coords.accuracy || 0),
-    capturedAt: new Date(position.timestamp || Date.now()).toISOString(),
-  };
+  if (
+    Number.isFinite(position.coords?.accuracy) &&
+    Number(position.coords.accuracy) > APP_CONFIG.trackingMinAccuracyMeters
+  ) {
+    setInlineStatus(
+      elements.mapStatus,
+      "GPS con precision floja. Mantengo la ultima posicion confiable.",
+      "warning"
+    );
+    return;
+  }
+
+  const activeRoute = getActiveRoute();
+  const nextPoint = updateUserLocation(state.activeTrip.currentLocation, position.coords, activeRoute);
+
+  if (!nextPoint) {
+    return;
+  }
 
   state.activeTrip.currentLocation = nextPoint;
   state.activeTrip.trackPoints = appendTrackingPoint(state.activeTrip.trackPoints, nextPoint);
+  state.activeTrip.navigationSnapshot = nextPoint.navigationSnapshot || computeNavigationSnapshot(activeRoute, nextPoint);
   state.activeTrip.delta = calculateTripDelta(
     state.activeTrip.estimatedDurationSeconds,
     getElapsedTripSeconds(state.activeTrip)
   );
   maybeHandleDeviation(nextPoint);
+  if (!state.routeRecalcInProgress) {
+    state.activeTrip.liveGuidance = buildLiveNavigationMessage({
+      offRoute: Boolean(state.deviationAlert),
+      currentStrategy: state.activeTrip.strategy,
+    });
+  }
+  maybeFollowUserOnMap(nextPoint);
   syncTrackingLayersOnly();
   renderOperationalPanel();
 }
@@ -1684,50 +2076,46 @@ function appendTrackingPoint(existingPoints, nextPoint) {
 function maybeHandleDeviation(currentPoint) {
   const activeRoute = getActiveRoute();
 
-  if (!activeRoute || !isValidPoint(currentPoint)) {
+  if (!state.activeTrip || !activeRoute || !isValidPoint(currentPoint)) {
     clearDeviationAlert();
     return;
   }
 
-  if (
-    Number.isFinite(currentPoint.accuracy) &&
-    currentPoint.accuracy > APP_CONFIG.deviationAccuracyLimitMeters
-  ) {
+  const recalculation = shouldRecalculateRoute({
+    currentCoords: currentPoint,
+    activeRoute,
+    elapsedSeconds: getElapsedTripSeconds(state.activeTrip),
+    lastRecalculatedAt: state.activeTrip.lastAutoRecalcAt,
+  });
+
+  state.activeTrip.offRouteMetrics = recalculation;
+
+  if (!recalculation.isOffRoute) {
     clearDeviationAlert();
     return;
   }
 
-  const elapsedSeconds = getElapsedTripSeconds(state.activeTrip);
-
-  if (elapsedSeconds < APP_CONFIG.deviationGracePeriodSeconds) {
-    clearDeviationAlert();
-    return;
-  }
-
-  const distanceMeters = getPointToRouteDistanceMeters(currentPoint, activeRoute.geometry);
-
-  if (!Number.isFinite(distanceMeters) || distanceMeters <= APP_CONFIG.deviationThresholdMeters) {
-    clearDeviationAlert();
-    return;
-  }
-
-  const lastAutoRecalcAt = new Date(state.activeTrip.lastAutoRecalcAt || 0).getTime();
-  const now = Date.now();
-  const canAutoRecalc = !lastAutoRecalcAt || now - lastAutoRecalcAt >= APP_CONFIG.deviationAutoRecalcDebounceMs;
-
+  const distanceMeters = Math.round(recalculation.distanceMeters || 0);
   state.deviationAlert = {
     distanceMeters,
-    title: `Te alejaste ${Math.round(distanceMeters)} m de la ruta`,
-    copy: canAutoRecalc
-      ? "Puedo recalcular solo en unos segundos o lo haces ahora."
-      : "Te ofrezco recalcular, pero estoy frenando el auto-recalculo para no spamear.",
-    detectedAt: new Date(now).toISOString(),
-    canAutoRecalc,
+    title: `Te alejaste ${distanceMeters} m de la ruta`,
+    copy: recalculation.shouldRecalculate
+      ? "Nueva ruta sugerida desde tu posicion actual. Puedo recalcular en breve o lo haces ahora."
+      : recalculation.reason || "Desvio detectado. Mantengo la ruta actual mientras confirmo mejor opcion.",
+    detectedAt: recalculation.detectedAt || new Date().toISOString(),
+    canAutoRecalc: Boolean(recalculation.shouldRecalculate),
   };
+  state.activeTrip.liveGuidance = buildLiveNavigationMessage({
+    offRoute: true,
+    currentStrategy: state.activeTrip.strategy,
+  });
 
-  if (canAutoRecalc) {
+  if (recalculation.shouldRecalculate && !state.routeRecalcInProgress) {
     scheduleAutoRecalc();
+    return;
   }
+
+  cancelAutoRecalc();
 }
 
 function scheduleAutoRecalc() {
@@ -1759,6 +2147,10 @@ async function handleRecalculateRoute(mode) {
   }
 
   cancelAutoRecalc();
+  state.routeRecalcInProgress = true;
+  state.activeTrip.liveGuidance = "Nueva ruta sugerida desde tu posicion actual.";
+  setInlineStatus(elements.mapStatus, "Recalculando desde tu posicion actual...", "warning");
+  renderOperationalPanel();
 
   if (mode === "auto") {
     state.activeTrip.lastAutoRecalcAt = new Date().toISOString();
@@ -2166,7 +2558,7 @@ function createTinyPill(label, tone = "accent") {
 }
 
 function renderModeStrip(stage) {
-  const stageOrder = ["waiting", "route-ready", "tracking", "closing"];
+  const stageOrder = ["waiting", "route-ready", "tracking", "off-route", "recalculating", "closing"];
   const activeIndex = stageOrder.indexOf(stage);
 
   elements.modeChips.forEach((chip) => {
@@ -2398,6 +2790,11 @@ function resumeRecoveredTrip() {
     state.activeTrip.trackPoints = state.activeTrip.currentLocation ? [{ ...state.activeTrip.currentLocation }] : [];
   }
 
+  state.activeTrip.followUser = state.activeTrip.followUser !== false;
+  state.activeTrip.liveLocationPaused = Boolean(state.activeTrip.liveLocationPaused);
+  state.activeTrip.navigationSnapshot = computeNavigationSnapshot(getActiveRoute(), state.activeTrip.currentLocation);
+  state.activeTrip.liveGuidance =
+    state.activeTrip.liveGuidance || buildLiveNavigationMessage({ currentStrategy: state.activeTrip.strategy });
   state.activeTrip.delta = calculateTripDelta(
     state.activeTrip.estimatedDurationSeconds,
     getElapsedTripSeconds(state.activeTrip)
@@ -2405,6 +2802,9 @@ function resumeRecoveredTrip() {
   startTrackingWatch();
   startTripTicker();
   syncMapLayers();
+  if (state.activeTrip.currentLocation && state.activeTrip.followUser && !state.activeTrip.liveLocationPaused) {
+    centerOnUser({ silent: true, force: true });
+  }
   setInlineStatus(elements.mapStatus, "Recupere tu viaje activo. Puedes seguir desde donde quedaste.", "success");
 }
 

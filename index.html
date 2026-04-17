@@ -91,6 +91,53 @@
                 <span class="status-pill is-neutral">Mapa rider</span>
                 <p class="map-glance-copy">Neuquen Capital, bici y foco operativo.</p>
               </div>
+              <section class="navigation-hud" id="navigation-hud" aria-live="polite" hidden>
+                <div class="navigation-hud-main">
+                  <div class="navigation-hud-copyblock">
+                    <span class="tiny-pill is-accent" id="navigation-hud-state">Ruta lista</span>
+                    <strong id="navigation-hud-title">Listo para navegar</strong>
+                    <p class="navigation-hud-copy" id="navigation-hud-copy">
+                      Voy a seguir tu ubicacion, mostrar avance y avisarte si conviene recalcular.
+                    </p>
+                  </div>
+
+                  <div class="navigation-hud-metrics">
+                    <article class="navigation-metric">
+                      <span>Falta</span>
+                      <strong id="navigation-remaining-time">Sin dato</strong>
+                    </article>
+                    <article class="navigation-metric">
+                      <span>Distancia</span>
+                      <strong id="navigation-remaining-distance">Sin dato</strong>
+                    </article>
+                  </div>
+                </div>
+
+                <div class="navigation-progress">
+                  <div class="navigation-progress-topline">
+                    <span>Avance</span>
+                    <strong id="navigation-progress-pill">En preparacion</strong>
+                  </div>
+                  <div class="navigation-progress-track" aria-hidden="true">
+                    <span class="navigation-progress-bar" id="navigation-progress-bar"></span>
+                  </div>
+                </div>
+
+                <div class="navigation-hud-actions">
+                  <button class="button button-secondary" id="center-on-user-button" type="button">
+                    Recentrar
+                  </button>
+                  <button class="button button-secondary" id="hud-recalculate-button" type="button">
+                    Recalcular
+                  </button>
+                  <button class="button button-secondary" id="pause-navigation-button" type="button">
+                    Pausar
+                  </button>
+                  <button class="button button-primary" id="finish-navigation-button" type="button">
+                    Finalizar
+                  </button>
+                </div>
+              </section>
             </div>
           </section>
 
@@ -123,7 +170,9 @@
                 <span class="mode-chip is-active" data-trip-stage="waiting">Esperando direccion</span>
                 <span class="mode-chip" data-trip-stage="route-ready">Ruta lista</span>
                 <span class="mode-chip" data-trip-stage="tracking">Seguimiento activo</span>
-                <span class="mode-chip" data-trip-stage="closing">Cierre de viaje</span>
+                <span class="mode-chip" data-trip-stage="off-route">Desvio detectado</span>
+                <span class="mode-chip" data-trip-stage="recalculating">Recalculando</span>
+                <span class="mode-chip" data-trip-stage="closing">Viaje finalizado</span>
               </div>
 
               <div class="decision-block">
