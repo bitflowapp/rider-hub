@@ -1,8 +1,8 @@
 {
   "id": "./",
-  "name": "Rider Hub",
-  "short_name": "Rider Hub",
-  "description": "PWA para riders en Neuquén Capital: Maps validado, efectivo simple y exportación PDF/XLSX.",
+  "name": "Rider Maps Neuquen",
+  "short_name": "Rider Maps",
+  "description": "PWA rider-first para Neuquen Capital: mapa embebido, rutas en bici, riesgo operativo y efectivo exportable.",
   "lang": "es",
   "start_url": "./index.html",
   "scope": "./",

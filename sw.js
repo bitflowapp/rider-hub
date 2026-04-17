@@ -1,4 +1,4 @@
-const CACHE_NAME = "rider-hub-v2";
+const CACHE_NAME = "rider-hub-v3";
 const APP_SHELL = [
   "./",
   "./index.html",
@@ -6,6 +6,7 @@ const APP_SHELL = [
   "./app.js",
   "./manifest.webmanifest",
   "./404.html",
+  "./data/risk_zones.js",
   "./engine/engine.js",
   "./engine/none.js",
   "./icons/icon-192.png",
@@ -15,9 +16,20 @@ const APP_SHELL = [
   "./icons/icon-192.svg",
   "./icons/icon-512.svg",
   "./icons/apple-touch-icon.svg",
+  "./services/export_service.js",
+  "./services/geocoding_service.js",
+  "./services/map_service.js",
+  "./services/risk_service.js",
+  "./services/routing_service.js",
+  "./utils/address_utils.js",
+  "./utils/app_config.js",
+  "./utils/format_utils.js",
+  "./utils/storage_utils.js",
   "./vendor/jspdf.umd.min.js",
   "./vendor/jspdf.plugin.autotable.min.js",
-  "./vendor/xlsx.full.min.js",
+  "./vendor/maplibre-gl.css",
+  "./vendor/maplibre-gl.js",
+  "./vendor/xlsx.full.min.js"
 ];
 
 self.addEventListener("install", (event) => {

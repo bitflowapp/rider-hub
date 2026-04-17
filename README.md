@@ -1,53 +1,27 @@
-# Rider Hub
+# Rider Maps Neuquen
 
-Rider Hub es una web app/PWA mobile-first pensada para trabajo real en la calle: permite abrir direcciones rápido en Google Maps en modo bicicleta, registrar pedidos manualmente y consultar un resumen operativo del día y de la semana.
+Rider Maps Neuquen es la V2 de Rider Hub: una PWA rider-first para moverse en bicicleta dentro de Neuquen Capital con mapa embebido, geocoding acotado, rutas sugeridas, evaluacion de riesgo operativo y un modulo secundario de efectivo/exportacion.
 
-## Qué hace la app
+## Lo que ya funciona
 
-- Lee una dirección desde el portapapeles cuando el navegador lo permite.
-- Limpia y normaliza la dirección antes de abrir Google Maps.
-- Abre Google Maps con `travelmode=bicycling`.
-- Guarda un historial local de las últimas 10 direcciones abiertas.
-- Registra pedidos manualmente con monto, métricas, zona, cobro, observaciones y fecha/hora.
-- Calcula resúmenes del día y de la semana enteramente en cliente.
-- Funciona como PWA instalable y rápida de reabrir.
+- Mapa embebido con MapLibre GL JS.
+- Basemap remoto sin clave usando OpenFreeMap.
+- Geocoding acotado a Neuquen Capital con Photon.
+- Rechazo de localidades fuera de alcance como Cipolletti, Plottier o Centenario.
+- Marcador de destino.
+- Origen por geolocalizacion cuando el navegador lo permite.
+- Origen de referencia en el centro de Neuquen cuando no hay geolocalizacion.
+- Calculo de rutas en bicicleta con abstraccion de provider.
+- Fallback automatico a OSRM demo si no hay clave de openrouteservice.
+- Selector de estrategia: `Rapida`, `Equilibrada`, `Prudente`.
+- Evaluacion local de riesgo operativo contra zonas cargadas en `data/risk_zones.js`.
+- Historial de destinos.
+- Feedback rapido del rider sobre la ruta.
+- Registro simple de efectivo con exportacion PDF y XLSX.
+- Persistencia local con `localStorage`.
+- Compatibilidad con GitHub Pages y PWA.
 
-## Funciones principales
-
-### Inicio: Pedido → Maps
-
-- Botón grande para leer el portapapeles y abrir Maps.
-- Campo manual grande para pegar o editar una dirección.
-- Botón para abrir Google Maps manualmente.
-- Historial clickeable de direcciones recientes.
-- Botón para reabrir la última dirección.
-- Feedback visual claro para lectura de portapapeles, apertura de Maps y errores.
-
-### Registrar pedido
-
-- Carga manual de monto.
-- Carga manual de km estimados.
-- Carga manual de minutos estimados.
-- Carga manual de zona.
-- Carga manual de forma de cobro.
-- Carga manual de observaciones.
-- Carga manual de fecha y hora.
-- Validaciones básicas para evitar datos rotos.
-- Guardado en `localStorage`.
-- Limpieza del formulario después de guardar.
-
-### Resumen
-
-- Total del día.
-- Cantidad de pedidos del día.
-- Promedio por pedido del día.
-- Total efectivo del día.
-- Total transferencia del día.
-- Total semanal.
-- Ganancia por hora aproximada del día cuando hay minutos cargados.
-- Listado reciente de pedidos guardados.
-
-## Estructura del proyecto
+## Arquitectura
 
 ```text
 rider-hub/
@@ -58,9 +32,28 @@ rider-hub/
 ├─ sw.js
 ├─ 404.html
 ├─ README.md
+├─ data/
+│  └─ risk_zones.js
 ├─ engine/
 │  ├─ engine.js
 │  └─ none.js
+├─ services/
+│  ├─ export_service.js
+│  ├─ geocoding_service.js
+│  ├─ map_service.js
+│  ├─ risk_service.js
+│  └─ routing_service.js
+├─ utils/
+│  ├─ address_utils.js
+│  ├─ app_config.js
+│  ├─ format_utils.js
+│  └─ storage_utils.js
+├─ vendor/
+│  ├─ jspdf.plugin.autotable.min.js
+│  ├─ jspdf.umd.min.js
+│  ├─ maplibre-gl.css
+│  ├─ maplibre-gl.js
+│  └─ xlsx.full.min.js
 └─ icons/
    ├─ apple-touch-icon.png
    ├─ icon-192.png
@@ -71,115 +64,88 @@ rider-hub/
    └─ apple-touch-icon.svg
 ```
 
-## Engine preparado para V2
+## Providers y restricciones reales
 
-La app deja una capa interna preparada para crecer sin romper el frontend:
+### Basemap
 
-- `getActiveEngine()`
-- `processAddressInput(text)`
-- `analyzeOrder(order)`
+- El mapa usa OpenFreeMap como estilo/base publica.
+- La UI ya queda lista para cambiar luego a PMTiles o una base local/regional propia.
 
-En esta V1:
+### Geocoding
 
-- `getActiveEngine()` devuelve `"none"`.
-- `processAddressInput(text)` limpia el texto de dirección.
-- `analyzeOrder(order)` devuelve `null`.
-- No hay requests de red ni integración de IA.
+- La busqueda usa Photon (`photon.komoot.io`) con bounding box sobre Neuquen Capital.
+- Es apto para prototipo y bajo volumen.
+- Para un despliegue serio con trafico sostenido conviene pasar a un geocoder propio o a un proxy liviano.
 
-La idea es poder sumar más adelante `engine/ollama.js` y resolver la selección del engine desde `engine/engine.js` sin tocar el resto de la app.
+### Routing
 
-## Cómo correrlo localmente
+- La capa `services/routing_service.js` abstrae el provider.
+- Si hay clave de `openrouteservice`, la app usa ORS.
+- Si no hay clave, cae a `OSRM demo` para que el prototipo siga funcionando de verdad.
+- La recomendacion de produccion es mover ORS o GraphHopper detras de un proxy/back-end chico para no exponer claves en el frontend publico.
 
-Como es una app estática, conviene abrirla con un servidor local simple para probar bien el service worker y la PWA.
+### Riesgo operativo
 
-### Opción con Python
+- La evaluacion actual cruza las rutas con zonas locales semilla definidas en `data/risk_zones.js`.
+- Esa base no pretende ser definitiva ni "verdad absoluta".
+- Antes de una version operativa fuerte conviene reemplazarla por zonas validadas con datos de calle y feedback real del rider.
+
+## Estrategias de ruta
+
+- `Rapida`: prioriza tiempo y penaliza poco el riesgo.
+- `Equilibrada`: mezcla tiempo y riesgo.
+- `Prudente`: castiga mucho el riesgo y, cuando ORS esta activo, intenta evitar zonas mas delicadas.
+
+## Configuracion opcional para ORS
+
+La app funciona sin claves gracias al fallback a OSRM demo, pero si quieres usar openrouteservice puedes inyectar una config global antes de `app.js`:
+
+```html
+<script>
+  window.RIDER_MAPS_CONFIG = {
+    orsApiKey: "TU_CLAVE_ORS"
+  };
+</script>
+```
+
+No conviene commitear claves en un repo publico.
+
+## Correr localmente
 
 ```bash
 python -m http.server 8080
 ```
 
-Después abrí:
+Abre:
 
 ```text
 http://localhost:8080
 ```
 
-### Opción con VS Code Live Server
+## GitHub Pages
 
-Podés abrir la carpeta del proyecto y servirla con una extensión de servidor estático.
+El frontend sigue siendo 100% estatico y compatible con GitHub Pages porque:
 
-## Ejemplos de comandos
-
-### Levantar un servidor local
-
-```bash
-python -m http.server 8080
-```
-
-### Inicializar Git y crear el primer commit
-
-```bash
-git init
-git branch -M main
-git add .
-git commit -m "feat: launch Rider Hub PWA"
-```
-
-## Cómo publicarlo en GitHub Pages
-
-1. Subí el proyecto a un repositorio público o privado compatible con Pages.
-2. En GitHub, abrí `Settings`.
-3. Si la pestaña `Settings` no aparece, abrila desde el menú desplegable de tabs del repositorio.
-4. En la barra lateral, dentro de `Code and automation`, entrá a `Pages`.
-5. En `Build and deployment`, en `Source`, elegí `Deploy from a branch`.
-6. Seleccioná la rama `main`.
-7. En la carpeta, dejá `/ (root)`.
-8. Tocá `Save` y esperá a que GitHub publique el sitio.
-
-Cuando termine, GitHub te va a mostrar la URL final de Pages.
-
-## Cómo usarlo en iPhone
-
-1. Abrí la URL de GitHub Pages en Safari.
-2. Esperá a que cargue la app por completo.
-3. Tocá el botón de compartir.
-4. Elegí `Agregar a pantalla de inicio`.
-5. Abrí Rider Hub desde el ícono para usarlo como app instalada.
-
-## Cómo agregarla a pantalla de inicio
-
-En iPhone, la instalación se hace desde Safari:
-
-1. Entrá al sitio publicado.
-2. Tocá `Compartir`.
-3. Elegí `Agregar a pantalla de inicio`.
-4. Confirmá el nombre.
-5. Tocá `Agregar`.
-
-## Limitaciones reales
-
-- La app no puede leer automáticamente una dirección desde otra app si antes el usuario no la copia.
-- La lectura del portapapeles depende del navegador, del contexto seguro y de una interacción explícita del usuario.
-- GitHub Pages es estático: no hay backend, base de datos remota ni procesamiento del lado servidor.
-- El sitio publicado en Pages queda accesible por internet.
-- El historial y los pedidos viven en `localStorage`, así que dependen del navegador/dispositivo donde se usen.
-- En esta versión no hay sincronización entre dispositivos.
-
-## Notas sobre una futura V2 con Ollama
-
-La estructura ya quedó lista para sumar un engine como `engine/ollama.js`, pero esta V1 no hace llamadas externas ni usa IA.
-
-Si en una V2 querés integrar Ollama, lo recomendado es usar un proxy o backend intermedio. No conviene conectar el navegador directamente a una API local de Ollama desde una PWA pública, tanto por compatibilidad como por seguridad y CORS.
-
-## Publicación en GitHub Pages
-
-Rider Hub es compatible con GitHub Pages porque:
-
-- usa solo HTML, CSS y JavaScript vanilla
-- no depende de backend
+- usa HTML, CSS y JavaScript vanilla
 - no requiere build step
-- usa rutas relativas para funcionar bien desde un repositorio publicado en Pages
+- no depende de backend para renderizar la app
+- usa rutas relativas
 
-## Licencia de uso
+## Publicar cambios
 
-Podés usar esta base como punto de partida para tu operación diaria y adaptarla a tu flujo de trabajo.
+```bash
+git status
+git add .
+git commit -m "feat: build rider-first map experience for Neuquén bicycle routing"
+git push origin main
+```
+
+## Limitaciones honestas
+
+- El basemap, el geocoder y el routing actual dependen de servicios remotos.
+- GitHub Pages solo sirve el frontend; no resuelve por si solo geocoding o routing en infraestructura propia.
+- Para una V3 mas robusta conviene:
+  - proxy pequeño para ORS o GraphHopper
+  - geocoder propio o cacheado
+  - dataset local de riesgo validado en calle
+  - opcion de tiles locales/PMTiles de Neuquen

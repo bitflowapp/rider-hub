@@ -1,73 +1,84 @@
-import { getActiveEngine, processAddressInput } from "./engine/engine.js";
+import { getActiveEngine } from "./engine/engine.js";
+import { exportCashEntriesExcel, exportCashEntriesPdf } from "./services/export_service.js";
+import { geocodeAddress } from "./services/geocoding_service.js";
+import { createMapService } from "./services/map_service.js";
+import { evaluateRouteRisk, getRiskZones, scoreRouteForStrategy } from "./services/risk_service.js";
+import { getRoute } from "./services/routing_service.js";
+import { APP_CONFIG } from "./utils/app_config.js";
+import {
+  buildDestinationHistoryEntry,
+  buildGoogleMapsUrl,
+  compactDestinationLabel,
+  normalizeDestinationHistory,
+  prepareAddressSearch,
+  toAsciiMatch,
+} from "./utils/address_utils.js";
+import {
+  buildWeekRangeLabel,
+  formatDateTime,
+  formatDistance,
+  formatDuration,
+  formatMoney,
+  getDateTimeLocalValue,
+  getWeekStart,
+  isWithinRange,
+  sortByNewest,
+  startOfDay,
+  addDays,
+  sumBy,
+} from "./utils/format_utils.js";
+import { readJsonStorage, writeJsonStorage } from "./utils/storage_utils.js";
 
-const STORAGE_KEYS = {
-  addressHistory: "riderHub.addressHistory.v1",
-  cashEntries: "riderHub.cashEntries.v2",
-  legacyOrders: "riderHub.orders.v1",
-};
-
-const MAX_HISTORY_ITEMS = 10;
-const CANONICAL_CITY = "Neuquén Capital, Neuquén, Argentina";
-const VIEW_NAMES = ["maps", "efectivo"];
-const RECENT_ENTRY_LIMIT = 10;
-const FORBIDDEN_LOCALITIES = [
-  { pattern: /\bcipolletti\b/, label: "Cipolletti" },
-  { pattern: /\bplottier\b/, label: "Plottier" },
-  { pattern: /\bcentenario\b/, label: "Centenario" },
-  { pattern: /\bsenillosa\b/, label: "Senillosa" },
-  { pattern: /\bfernandez oro\b/, label: "Fernández Oro" },
-  { pattern: /\bcontralmirante cordero\b/, label: "Contralmirante Cordero" },
-  { pattern: /\bcinco saltos\b/, label: "Cinco Saltos" },
-  { pattern: /\ballen\b/, label: "Allen" },
-  { pattern: /\bvista alegre\b/, label: "Vista Alegre" },
-  { pattern: /\bel chocon\b/, label: "El Chocón" },
-  { pattern: /\bcutral co\b/, label: "Cutral Co" },
-  { pattern: /\bplaza huincul\b/, label: "Plaza Huincul" },
-  { pattern: /\brio negro\b/, label: "Río Negro" },
-  { pattern: /\bneuquen province\b/, label: "otra referencia fuera de la ciudad" },
-  { pattern: /\bbuenos aires\b/, label: "Buenos Aires" },
-  { pattern: /\bcaba\b/, label: "CABA" },
-  { pattern: /\bcordoba\b/, label: "Córdoba" },
-];
-
-const currencyFormatter = new Intl.NumberFormat("es-AR", {
-  minimumFractionDigits: 0,
-  maximumFractionDigits: 2,
-});
-
-const dateTimeFormatter = new Intl.DateTimeFormat("es-AR", {
-  dateStyle: "short",
-  timeStyle: "short",
-});
-
-const dateFormatter = new Intl.DateTimeFormat("es-AR", {
-  weekday: "short",
-  day: "2-digit",
-  month: "2-digit",
-});
+const VIEW_NAMES = ["maps", "cash"];
 
 const state = {
-  addressHistory: normalizeAddressHistory(readStorage(STORAGE_KEYS.addressHistory, [])),
+  mapService: null,
+  currentView: "maps",
+  selectedStrategy: readJsonStorage(APP_CONFIG.storageKeys.lastStrategy, "balanced"),
+  destinationHistory: normalizeDestinationHistory(
+    readJsonStorage(APP_CONFIG.storageKeys.destinationHistory, readJsonStorage("riderHub.addressHistory.v1", []))
+  ),
+  routeFeedback: normalizeRouteFeedback(readJsonStorage(APP_CONFIG.storageKeys.routeFeedback, [])),
   cashEntries: [],
+  origin: { ...APP_CONFIG.referenceOrigin },
+  destination: null,
+  routes: [],
+  activeRouteId: "",
+  activeProvider: "",
 };
 
 const elements = {
   views: Array.from(document.querySelectorAll(".view")),
   navButtons: Array.from(document.querySelectorAll(".nav-button")),
+  strategyButtons: Array.from(document.querySelectorAll(".strategy-button")),
+  feedbackButtons: Array.from(document.querySelectorAll(".feedback-button")),
   addressInput: document.querySelector("#address-input"),
-  clipboardOpenButton: document.querySelector("#clipboard-open-button"),
-  openMapsButton: document.querySelector("#open-maps-button"),
-  reopenLastButton: document.querySelector("#reopen-last-button"),
-  historyList: document.querySelector("#history-list"),
+  pasteAddressButton: document.querySelector("#paste-address-button"),
+  searchAddressButton: document.querySelector("#search-address-button"),
+  useLocationButton: document.querySelector("#use-location-button"),
+  calculateRouteButton: document.querySelector("#calculate-route-button"),
+  openExternalNavButton: document.querySelector("#open-external-nav-button"),
   mapStatus: document.querySelector("#map-status"),
+  routeProviderLabel: document.querySelector("#route-provider-label"),
+  routeSelectionCopy: document.querySelector("#route-selection-copy"),
+  routeDistance: document.querySelector("#route-distance"),
+  routeDuration: document.querySelector("#route-duration"),
+  routeRiskValue: document.querySelector("#route-risk-value"),
+  routeRiskLabel: document.querySelector("#route-risk-label"),
+  routeReasons: document.querySelector("#route-reasons"),
+  routeWarningBadge: document.querySelector("#route-warning-badge"),
+  riskCallout: document.querySelector("#risk-callout"),
+  routeList: document.querySelector("#route-list"),
+  historyList: document.querySelector("#history-list"),
+  feedbackList: document.querySelector("#feedback-list"),
   cashForm: document.querySelector("#cash-form"),
   cashAmount: document.querySelector("#cash-amount"),
   cashDateTime: document.querySelector("#cash-datetime"),
   cashAddress: document.querySelector("#cash-address"),
   cashNotes: document.querySelector("#cash-notes"),
-  cashStatus: document.querySelector("#cash-status"),
   useLastAddressButton: document.querySelector("#use-last-address-button"),
   addressSuggestions: document.querySelector("#address-suggestions"),
+  cashStatus: document.querySelector("#cash-status"),
   summaryRange: document.querySelector("#cash-summary-range"),
   statDayTotal: document.querySelector("#stat-day-total"),
   statDayCount: document.querySelector("#stat-day-count"),
@@ -81,16 +92,39 @@ const elements = {
 
 init();
 
-function init() {
+async function init() {
   state.cashEntries = loadCashEntries();
   elements.cashDateTime.value = getDateTimeLocalValue();
 
   bindEvents();
   syncViewFromHash();
-  renderHistory();
+  updateStrategyButtons();
   renderAddressSuggestions();
+  renderHistory();
+  renderFeedback();
   renderCashView();
+  renderRoutePanel();
+  syncCashAddressWithLastDestination();
+
+  try {
+    state.mapService = await createMapService({
+      containerId: "map",
+      riskZones: getRiskZones(),
+    });
+
+    state.mapService.setOrigin(buildPointFeature(state.origin, { kind: "origin" }));
+    setInlineStatus(elements.mapStatus, "Mapa listo. Busca un destino dentro de Neuquen Capital.", "success");
+  } catch (error) {
+    console.error(error);
+    setInlineStatus(
+      elements.mapStatus,
+      "No pude inicializar el mapa embebido. Refresca la app o revisa la conexion.",
+      "danger"
+    );
+  }
+
   registerServiceWorker();
+  console.info(`Engine activo: ${getActiveEngine()}`);
 }
 
 function bindEvents() {
@@ -102,35 +136,48 @@ function bindEvents() {
 
   window.addEventListener("hashchange", syncViewFromHash);
 
-  elements.addressInput.addEventListener("blur", () => {
-    elements.addressInput.value = processAddressInput(elements.addressInput.value);
+  elements.strategyButtons.forEach((button) => {
+    button.addEventListener("click", () => {
+      state.selectedStrategy = button.dataset.strategy;
+      writeJsonStorage(APP_CONFIG.storageKeys.lastStrategy, state.selectedStrategy);
+      updateStrategyButtons();
+
+      if (state.routes.length) {
+        applyStrategyToRoutes();
+      }
+    });
   });
 
-  elements.cashAddress.addEventListener("blur", () => {
-    elements.cashAddress.value = processAddressInput(elements.cashAddress.value);
+  elements.feedbackButtons.forEach((button) => {
+    button.addEventListener("click", () => {
+      saveRouteFeedback(button.dataset.feedback);
+    });
   });
 
-  elements.clipboardOpenButton.addEventListener("click", handleClipboardOpen);
-  elements.openMapsButton.addEventListener("click", () => openMapsForAddress(elements.addressInput.value));
-  elements.reopenLastButton.addEventListener("click", reopenLastAddress);
-  elements.useLastAddressButton.addEventListener("click", applyLastAddressToCashForm);
+  elements.pasteAddressButton.addEventListener("click", handlePasteAddress);
+  elements.searchAddressButton.addEventListener("click", handleSearchAddress);
+  elements.calculateRouteButton.addEventListener("click", handleCalculateRoute);
+  elements.useLocationButton.addEventListener("click", handleUseCurrentLocation);
+  elements.openExternalNavButton.addEventListener("click", openExternalNavigation);
+
   elements.cashForm.addEventListener("submit", handleCashSubmit);
+  elements.useLastAddressButton.addEventListener("click", applyLastDestinationToCashForm);
   elements.exportPdfButton.addEventListener("click", handleExportPdf);
   elements.exportExcelButton.addEventListener("click", handleExportExcel);
 }
 
 function syncViewFromHash() {
   const hash = window.location.hash.replace("#", "").toLowerCase();
-  const activeView = VIEW_NAMES.includes(hash) ? hash : "maps";
+  state.currentView = VIEW_NAMES.includes(hash) ? hash : "maps";
 
   elements.views.forEach((view) => {
-    const isActive = view.id === `view-${activeView}`;
+    const isActive = view.id === `view-${state.currentView}`;
     view.classList.toggle("is-active", isActive);
     view.hidden = !isActive;
   });
 
   elements.navButtons.forEach((button) => {
-    const isActive = button.dataset.view === activeView;
+    const isActive = button.dataset.view === state.currentView;
     button.classList.toggle("is-active", isActive);
 
     if (isActive) {
@@ -140,189 +187,455 @@ function syncViewFromHash() {
     }
   });
 
-  if (activeView === "efectivo") {
+  if (state.currentView === "cash") {
     renderCashView();
   }
 }
 
-async function handleClipboardOpen() {
+async function handlePasteAddress() {
   try {
     if (!navigator.clipboard || !window.isSecureContext) {
-      throw new Error("Clipboard API no disponible");
+      throw new Error("Clipboard no disponible");
     }
 
-    const clipboardText = await navigator.clipboard.readText();
-    const cleanedAddress = processAddressInput(clipboardText);
+    const text = await navigator.clipboard.readText();
+    const prepared = prepareAddressSearch(text);
 
-    if (!cleanedAddress) {
-      setInlineStatus(elements.mapStatus, "El portapapeles no trae una dirección usable.", "warning");
-      showToast("No encontré una dirección en el portapapeles.", "warning");
-      elements.addressInput.focus();
+    if (!prepared.ok) {
+      setInlineStatus(elements.mapStatus, prepared.reason, "warning");
+      showToast(prepared.reason, "warning");
       return;
     }
 
-    elements.addressInput.value = cleanedAddress;
-    setInlineStatus(elements.mapStatus, "Dirección leída del portapapeles.", "success");
-    showToast("Dirección cargada desde el portapapeles.", "success");
-    openMapsForAddress(cleanedAddress);
+    elements.addressInput.value = prepared.searchLabel;
+    setInlineStatus(elements.mapStatus, "Direccion pegada. Ahora toca Buscar.", "success");
+    showToast("Direccion pegada desde el portapapeles.", "success");
   } catch (error) {
     setInlineStatus(
       elements.mapStatus,
-      "No pude leer el portapapeles. Pegá la dirección manualmente.",
+      "No pude leer el portapapeles. Pega la direccion manualmente.",
       "warning"
     );
-    showToast("Falló la lectura del portapapeles.", "warning");
-    elements.addressInput.focus();
+    showToast("Fallo la lectura del portapapeles.", "warning");
   }
 }
 
-function openMapsForAddress(rawText) {
-  const result = buildNeuqenDestination(rawText);
+async function handleSearchAddress() {
+  try {
+    setInlineStatus(elements.mapStatus, "Buscando una coincidencia confiable en Neuquen Capital...", "default");
 
-  if (!result.ok) {
-    setInlineStatus(elements.mapStatus, result.reason, "danger");
-    showToast(result.reason, "danger");
-    elements.addressInput.focus();
-    return false;
+    const result = await geocodeAddress(elements.addressInput.value);
+
+    if (!result.ok) {
+      setInlineStatus(elements.mapStatus, result.reason, "danger");
+      showToast(result.reason, "danger");
+      return;
+    }
+
+    elements.addressInput.value = compactDestinationLabel(result.destination.label);
+    setDestination(result.destination);
+    pushDestinationHistory(result.destination);
+    renderHistory();
+    renderAddressSuggestions();
+    syncCashAddressWithLastDestination();
+
+    if (state.mapService) {
+      state.mapService.setDestination(buildPointFeature(result.destination.coordinates, { kind: "destination" }));
+      state.mapService.flyTo(result.destination.coordinates.lng, result.destination.coordinates.lat, 15.4);
+    }
+
+    state.routes = [];
+    state.activeRouteId = "";
+    renderRoutePanel();
+    setInlineStatus(elements.mapStatus, "Destino encontrado. Ya puedes calcular la ruta.", "success");
+    showToast("Destino ubicado dentro de Neuquen Capital.", "success");
+  } catch (error) {
+    console.error(error);
+    setInlineStatus(
+      elements.mapStatus,
+      "No pude resolver la direccion ahora. Revisa el texto e intenta de nuevo.",
+      "danger"
+    );
+    showToast("Fallo la busqueda de direccion.", "danger");
   }
-
-  elements.addressInput.value = result.label;
-  pushAddressToHistory(result.destination);
-  renderHistory();
-  renderAddressSuggestions();
-  syncCashAddressWithLastOpened();
-
-  const mapsUrl =
-    "https://www.google.com/maps/dir/?api=1&destination=" +
-    encodeURIComponent(result.destination) +
-    "&travelmode=bicycling";
-
-  setInlineStatus(elements.mapStatus, "Abriendo Google Maps en modo bicicleta...", "success");
-  showToast("Google Maps abierto para Neuquén Capital.", "success");
-
-  const externalWindow = window.open(mapsUrl, "_blank", "noopener,noreferrer");
-
-  if (!externalWindow) {
-    window.location.assign(mapsUrl);
-  }
-
-  return true;
 }
 
-function reopenLastAddress() {
-  const [lastAddress] = state.addressHistory;
-
-  if (!lastAddress) {
-    const message = "Todavía no abriste ninguna dirección.";
+async function handleUseCurrentLocation() {
+  if (!navigator.geolocation) {
+    const message = "Este navegador no ofrece geolocalizacion.";
     setInlineStatus(elements.mapStatus, message, "warning");
     showToast(message, "warning");
     return;
   }
 
-  openMapsForAddress(lastAddress.address);
+  setInlineStatus(elements.mapStatus, "Buscando tu ubicacion actual...", "default");
+
+  navigator.geolocation.getCurrentPosition(
+    (position) => {
+      state.origin = {
+        lng: position.coords.longitude,
+        lat: position.coords.latitude,
+        label: "Mi ubicacion actual",
+        isApproximate: false,
+      };
+
+      setOriginFeature(state.origin);
+      setInlineStatus(elements.mapStatus, "Ubicacion actual lista para rutear.", "success");
+      showToast("Ubicacion actual fijada.", "success");
+
+      if (state.destination) {
+        handleCalculateRoute();
+      }
+    },
+    (error) => {
+      const message = "No pude acceder a tu ubicacion. Sigo con origen de referencia.";
+      console.error(error);
+      setInlineStatus(elements.mapStatus, message, "warning");
+      showToast(message, "warning");
+    },
+    {
+      enableHighAccuracy: true,
+      timeout: 10000,
+      maximumAge: 30000,
+    }
+  );
 }
 
-function applyLastAddressToCashForm() {
-  const [lastAddress] = state.addressHistory;
-
-  if (!lastAddress) {
-    const message = "Todavía no hay una dirección reciente para reutilizar.";
-    setInlineStatus(elements.cashStatus, message, "warning");
+async function handleCalculateRoute() {
+  if (!state.destination) {
+    const message = "Busca primero un destino valido dentro de Neuquen Capital.";
+    setInlineStatus(elements.mapStatus, message, "warning");
     showToast(message, "warning");
     return;
   }
 
-  elements.cashAddress.value = lastAddress.address;
-  elements.cashAddress.focus();
+  try {
+    setInlineStatus(elements.mapStatus, "Calculando variantes de ruta en bici...", "default");
+
+    const routeResponse = await getRoute({
+      origin: state.origin,
+      destination: state.destination.coordinates,
+      strategy: state.selectedStrategy,
+    });
+
+    state.activeProvider = routeResponse.provider;
+    state.routes = routeResponse.routes.map((route) => {
+      const risk = evaluateRouteRisk({
+        type: "Feature",
+        geometry: route.geometry,
+      });
+
+      return {
+        ...route,
+        risk,
+        strategyScore: scoreRouteForStrategy(route, risk, state.selectedStrategy),
+      };
+    });
+
+    applyStrategyToRoutes();
+
+    const successMessage = state.origin.isApproximate
+      ? "Ruta calculada usando el centro de Neuquen como referencia. Toca Mi ubicacion para mejorar precision."
+      : "Ruta calculada. Ya puedes revisar riesgo y abrir navegacion externa.";
+
+    setInlineStatus(elements.mapStatus, successMessage, "success");
+    showToast("Ruta calculada.", "success");
+  } catch (error) {
+    console.error(error);
+    state.routes = [];
+    state.activeRouteId = "";
+    renderRoutePanel();
+    setInlineStatus(
+      elements.mapStatus,
+      "No pude calcular la ruta en este momento. Intenta de nuevo en unos segundos.",
+      "danger"
+    );
+    showToast("Fallo el calculo de ruta.", "danger");
+  }
 }
 
-function pushAddressToHistory(address) {
-  const loweredAddress = address.toLowerCase();
-  const nextHistory = state.addressHistory.filter((item) => item.address.toLowerCase() !== loweredAddress);
+function applyStrategyToRoutes() {
+  if (!state.routes.length) {
+    renderRoutePanel();
+    return;
+  }
 
-  nextHistory.unshift({
-    address,
-    openedAt: new Date().toISOString(),
+  state.routes = state.routes.map((route) => ({
+    ...route,
+    strategyScore: scoreRouteForStrategy(route, route.risk, state.selectedStrategy),
+  }));
+
+  const sortedRoutes = [...state.routes].sort((left, right) => left.strategyScore - right.strategyScore);
+  state.activeRouteId = sortedRoutes[0].id;
+  renderRoutePanel();
+}
+
+function openExternalNavigation() {
+  const activeRoute = getActiveRoute();
+
+  if (!activeRoute || !state.destination) {
+    return;
+  }
+
+  const url = buildGoogleMapsUrl({
+    origin: state.origin,
+    destination: state.destination,
   });
 
-  state.addressHistory = nextHistory.slice(0, MAX_HISTORY_ITEMS);
-  writeStorage(STORAGE_KEYS.addressHistory, state.addressHistory);
+  const externalWindow = window.open(url, "_blank", "noopener,noreferrer");
+
+  if (!externalWindow) {
+    window.location.assign(url);
+  }
 }
 
-function renderHistory() {
-  elements.historyList.replaceChildren();
-  elements.reopenLastButton.disabled = !state.addressHistory.length;
+function setDestination(destination) {
+  state.destination = destination;
 
-  if (!state.addressHistory.length) {
-    elements.historyList.append(
-      createEmptyState(
-        "Todavía no abriste direcciones. Cuando uses Maps desde Rider Hub, las vas a tener acá."
-      )
+  if (state.mapService) {
+    state.mapService.setDestination(buildPointFeature(destination.coordinates, { kind: "destination" }));
+  }
+}
+
+function setOriginFeature(origin) {
+  if (state.mapService) {
+    state.mapService.setOrigin(buildPointFeature(origin, { kind: "origin" }));
+
+    if (!origin.isApproximate) {
+      state.mapService.flyTo(origin.lng, origin.lat, 14.8);
+    }
+  }
+}
+
+function renderRoutePanel() {
+  const activeRoute = getActiveRoute();
+
+  elements.routeProviderLabel.textContent = buildProviderLabel(state.activeProvider);
+  elements.openExternalNavButton.disabled = !activeRoute || !state.destination;
+  elements.feedbackButtons.forEach((button) => {
+    button.disabled = !activeRoute;
+  });
+
+  if (!activeRoute) {
+    elements.routeSelectionCopy.textContent = state.destination
+      ? `Destino listo: ${compactDestinationLabel(state.destination.label)}. Calcula la ruta para comparar variantes.`
+      : "Define un destino y calcula la ruta para ver distancia, tiempo, riesgo y variantes.";
+    elements.routeDistance.textContent = "Sin ruta";
+    elements.routeDuration.textContent = "Sin ruta";
+    elements.routeRiskValue.textContent = "Sin evaluar";
+    elements.routeRiskLabel.textContent = "Normal";
+    elements.routeReasons.textContent =
+      "La evaluacion cruza la ruta con una base local de riesgo operativo semilla.";
+    elements.routeWarningBadge.hidden = true;
+    setRiskCalloutTone("normal");
+    if (state.mapService) {
+      state.mapService.setRoutes([], "");
+    }
+    renderRouteList([]);
+    return;
+  }
+
+  elements.routeSelectionCopy.textContent = `${compactDestinationLabel(state.destination.label)} · ${buildOriginCopy()}`;
+  elements.routeDistance.textContent = formatDistance(activeRoute.distanceMeters);
+  elements.routeDuration.textContent = formatDuration(activeRoute.durationSeconds);
+  elements.routeRiskValue.textContent = activeRoute.risk.label;
+  elements.routeRiskLabel.textContent = activeRoute.risk.label;
+  elements.routeReasons.textContent = activeRoute.risk.reasons.length
+    ? activeRoute.risk.reasons.join(" ")
+    : "No detecte cruces con zonas cargadas como mas delicadas.";
+
+  const shouldWarn = activeRoute.risk.label !== "Normal";
+  elements.routeWarningBadge.hidden = !shouldWarn;
+  elements.routeWarningBadge.textContent = shouldWarn ? "Atencion" : "";
+  setRiskCalloutTone(activeRoute.risk.label);
+  renderRouteList(state.routes);
+
+  if (state.mapService) {
+    state.mapService.setRoutes(state.routes, state.activeRouteId);
+  }
+}
+
+function renderRouteList(routes) {
+  elements.routeList.replaceChildren();
+
+  if (!routes.length) {
+    elements.routeList.append(
+      createEmptyState("Todavia no hay rutas calculadas. Busca un destino y toca Calcular ruta.")
     );
     return;
   }
 
-  state.addressHistory.forEach((item) => {
+  [...routes]
+    .sort((left, right) => left.strategyScore - right.strategyScore)
+    .forEach((route, index) => {
+      const button = document.createElement("button");
+      const topLine = document.createElement("div");
+      const title = document.createElement("strong");
+      const subtitle = document.createElement("span");
+      const metrics = document.createElement("div");
+
+      button.type = "button";
+      button.className = "route-card";
+
+      if (route.id === state.activeRouteId) {
+        button.classList.add("is-active");
+      }
+
+      button.addEventListener("click", () => {
+        state.activeRouteId = route.id;
+        renderRoutePanel();
+      });
+
+      topLine.className = "route-card-top";
+      title.textContent = index === 0 ? "Recomendada" : `Alternativa ${index + 1}`;
+      subtitle.className = "history-meta";
+      subtitle.textContent = `${formatDistance(route.distanceMeters)} · ${formatDuration(route.durationSeconds)}`;
+      topLine.append(title, subtitle);
+
+      metrics.className = "route-card-metrics";
+      metrics.append(
+        createTinyPill(route.risk.label, getRiskTone(route.risk.label)),
+        createTinyPill(buildStrategyLabel(state.selectedStrategy), "accent")
+      );
+
+      button.append(topLine, metrics);
+      elements.routeList.append(button);
+    });
+}
+
+function renderHistory() {
+  elements.historyList.replaceChildren();
+
+  if (!state.destinationHistory.length) {
+    elements.historyList.append(
+      createEmptyState("Tus destinos buscados van a quedar aqui para reusar en segundos.")
+    );
+    return;
+  }
+
+  state.destinationHistory.forEach((entry) => {
     const button = document.createElement("button");
-    const content = document.createElement("span");
-    const timestamp = document.createElement("span");
+    const title = document.createElement("strong");
+    const meta = document.createElement("span");
 
     button.type = "button";
     button.className = "history-button";
-    button.addEventListener("click", () => openMapsForAddress(item.address));
+    button.addEventListener("click", () => {
+      elements.addressInput.value = compactDestinationLabel(entry.label);
+      setDestination(entry);
+      renderRoutePanel();
 
-    content.className = "history-address";
-    content.textContent = compactAddress(item.address);
+      if (state.mapService) {
+        state.mapService.setDestination(buildPointFeature(entry.coordinates, { kind: "destination" }));
+        state.mapService.flyTo(entry.coordinates.lng, entry.coordinates.lat, 15.4);
+      }
 
-    timestamp.className = "history-time";
-    timestamp.textContent = dateTimeFormatter.format(new Date(item.openedAt));
+      setInlineStatus(elements.mapStatus, "Destino cargado desde historial. Ya puedes rutear.", "success");
+    });
 
-    button.append(content, timestamp);
+    title.className = "history-address";
+    title.textContent = compactDestinationLabel(entry.label);
+    meta.className = "history-meta";
+    meta.textContent = formatDateTime(entry.createdAt);
+
+    button.append(title, meta);
     elements.historyList.append(button);
+  });
+}
+
+function renderFeedback() {
+  elements.feedbackList.replaceChildren();
+
+  if (!state.routeFeedback.length) {
+    elements.feedbackList.append(
+      createEmptyState("Cuando marques una ruta como buena o incomoda, el registro aparece aqui.")
+    );
+    return;
+  }
+
+  state.routeFeedback.slice(0, APP_CONFIG.recentFeedbackLimit).forEach((entry) => {
+    const item = document.createElement("article");
+    const topLine = document.createElement("div");
+    const label = document.createElement("strong");
+    const meta = document.createElement("span");
+    const copy = document.createElement("p");
+
+    item.className = "feedback-item";
+    topLine.className = "feedback-topline";
+    label.textContent = buildFeedbackLabel(entry.type);
+    meta.className = "feedback-meta";
+    meta.textContent = formatDateTime(entry.createdAt);
+    copy.className = "route-card-copy";
+    copy.textContent = `${entry.destinationLabel} · ${entry.strategyLabel}`;
+
+    topLine.append(label, meta);
+    item.append(topLine, copy);
+    elements.feedbackList.append(item);
   });
 }
 
 function renderAddressSuggestions() {
   elements.addressSuggestions.replaceChildren();
 
-  state.addressHistory.forEach((item) => {
+  state.destinationHistory.forEach((entry) => {
     const option = document.createElement("option");
-    option.value = item.address;
+    option.value = compactDestinationLabel(entry.label);
     elements.addressSuggestions.append(option);
   });
 }
 
-function syncCashAddressWithLastOpened() {
-  const [lastAddress] = state.addressHistory;
+function saveRouteFeedback(type) {
+  const activeRoute = getActiveRoute();
 
-  if (!lastAddress || processAddressInput(elements.cashAddress.value)) {
+  if (!activeRoute || !state.destination) {
     return;
   }
 
-  elements.cashAddress.value = lastAddress.address;
+  const entry = {
+    id: `feedback-${Date.now()}-${Math.random().toString(16).slice(2, 7)}`,
+    type,
+    createdAt: new Date().toISOString(),
+    destinationLabel: compactDestinationLabel(state.destination.label),
+    strategy: state.selectedStrategy,
+    strategyLabel: buildStrategyLabel(state.selectedStrategy),
+    routeRisk: activeRoute.risk.label,
+  };
+
+  state.routeFeedback = sortByNewest([entry, ...state.routeFeedback]);
+  writeJsonStorage(APP_CONFIG.storageKeys.routeFeedback, state.routeFeedback);
+  renderFeedback();
+  showToast("Feedback guardado.", "success");
+}
+
+function pushDestinationHistory(destination) {
+  const nextHistory = state.destinationHistory.filter(
+    (entry) => toAsciiMatch(entry.label) !== toAsciiMatch(destination.label)
+  );
+
+  nextHistory.unshift(buildDestinationHistoryEntry(destination));
+  state.destinationHistory = normalizeDestinationHistory(nextHistory);
+  writeJsonStorage(APP_CONFIG.storageKeys.destinationHistory, state.destinationHistory);
 }
 
 function handleCashSubmit(event) {
   event.preventDefault();
 
   const formData = new FormData(elements.cashForm);
-  const amount = parseNumber(formData.get("amount"), { required: true, allowZero: false });
-  const createdAtValue = processAddressInput(formData.get("createdAt"));
-  const notes = processAddressInput(formData.get("notes"));
-  const rawAddress = processAddressInput(formData.get("address"));
+  const amount = parsePositiveNumber(formData.get("amount"));
+  const createdAtValue = String(formData.get("createdAt") || "").trim();
+  const notes = String(formData.get("notes") || "").trim();
+  const rawAddress = String(formData.get("address") || "").trim();
 
-  if (amount == null || amount === false) {
-    const message = "Ingresá un monto válido mayor a cero.";
-    setInlineStatus(elements.cashStatus, message, "danger");
-    showToast(message, "danger");
+  if (amount == null) {
+    setInlineStatus(elements.cashStatus, "Ingresa un monto valido mayor a cero.", "danger");
+    showToast("Revisa el monto.", "danger");
     elements.cashAmount.focus();
     return;
   }
 
   if (!createdAtValue) {
-    const message = "La fecha y hora son obligatorias.";
-    setInlineStatus(elements.cashStatus, message, "danger");
-    showToast(message, "danger");
+    setInlineStatus(elements.cashStatus, "La fecha y hora son obligatorias.", "danger");
+    showToast("Completa fecha y hora.", "danger");
     elements.cashDateTime.focus();
     return;
   }
@@ -330,9 +643,8 @@ function handleCashSubmit(event) {
   const createdAt = new Date(createdAtValue);
 
   if (Number.isNaN(createdAt.getTime())) {
-    const message = "La fecha y hora no son válidas.";
-    setInlineStatus(elements.cashStatus, message, "danger");
-    showToast(message, "danger");
+    setInlineStatus(elements.cashStatus, "La fecha y hora no son validas.", "danger");
+    showToast("Fecha u hora invalidas.", "danger");
     elements.cashDateTime.focus();
     return;
   }
@@ -340,43 +652,70 @@ function handleCashSubmit(event) {
   let address = "";
 
   if (rawAddress) {
-    const addressResult = buildNeuqenDestination(rawAddress);
+    const preparedAddress = prepareAddressSearch(rawAddress);
 
-    if (!addressResult.ok) {
-      setInlineStatus(elements.cashStatus, addressResult.reason, "danger");
-      showToast(addressResult.reason, "danger");
+    if (!preparedAddress.ok) {
+      setInlineStatus(elements.cashStatus, preparedAddress.reason, "danger");
+      showToast(preparedAddress.reason, "danger");
       elements.cashAddress.focus();
       return;
     }
 
-    address = addressResult.destination;
+    address = `${preparedAddress.searchLabel}, ${APP_CONFIG.cityQuery}`;
   }
 
   const entry = {
     id: `cash-${createdAt.getTime()}-${Math.random().toString(16).slice(2, 8)}`,
     amount,
     createdAt: createdAt.toISOString(),
-    notes,
     address,
+    notes,
   };
 
-  state.cashEntries = sortEntriesDescending([entry, ...state.cashEntries]);
-  writeStorage(STORAGE_KEYS.cashEntries, state.cashEntries);
+  state.cashEntries = sortByNewest([entry, ...state.cashEntries]);
+  writeJsonStorage(APP_CONFIG.storageKeys.cashEntries, state.cashEntries);
 
-  if (address) {
-    pushAddressToHistory(address);
+  if (address && state.destination && compactDestinationLabel(state.destination.label) === compactDestinationLabel(address)) {
+    pushDestinationHistory({
+      id: entry.id,
+      label: address,
+      displayName: address,
+      coordinates: state.destination.coordinates,
+    });
     renderHistory();
     renderAddressSuggestions();
   }
 
   elements.cashForm.reset();
   elements.cashDateTime.value = getDateTimeLocalValue();
-  syncCashAddressWithLastOpened();
+  syncCashAddressWithLastDestination();
 
-  const message = "Registro de efectivo guardado.";
-  setInlineStatus(elements.cashStatus, message, "success");
-  showToast(message, "success");
+  setInlineStatus(elements.cashStatus, "Registro de efectivo guardado.", "success");
+  showToast("Efectivo guardado.", "success");
   renderCashView();
+}
+
+function applyLastDestinationToCashForm() {
+  if (!state.destinationHistory.length) {
+    setInlineStatus(
+      elements.cashStatus,
+      "Todavia no hay destinos recientes para reutilizar.",
+      "warning"
+    );
+    showToast("No hay destino reciente.", "warning");
+    return;
+  }
+
+  elements.cashAddress.value = compactDestinationLabel(state.destinationHistory[0].label);
+  elements.cashAddress.focus();
+}
+
+function syncCashAddressWithLastDestination() {
+  if (elements.cashAddress.value.trim() || !state.destinationHistory.length) {
+    return;
+  }
+
+  elements.cashAddress.value = compactDestinationLabel(state.destinationHistory[0].label);
 }
 
 function renderCashView() {
@@ -392,8 +731,7 @@ function renderCashView() {
   elements.statDayTotal.textContent = formatMoney(sumBy(dayEntries, (entry) => entry.amount));
   elements.statDayCount.textContent = String(dayEntries.length);
   elements.statWeekTotal.textContent = formatMoney(sumBy(weekEntries, (entry) => entry.amount));
-  elements.summaryRange.textContent =
-    `Semana actual · ${dateFormatter.format(weekStart)} al ${dateFormatter.format(addDays(weekEnd, -1))}`;
+  elements.summaryRange.textContent = buildWeekRangeLabel();
 
   renderCashList();
 }
@@ -403,40 +741,36 @@ function renderCashList() {
 
   if (!state.cashEntries.length) {
     elements.cashList.append(
-      createEmptyState(
-        "Todavía no guardaste efectivo. Registrá un cobro y vas a verlo enseguida en este resumen."
-      )
+      createEmptyState("Todavia no guardaste efectivo. Registra un cobro y aparecera aqui.")
     );
     return;
   }
 
-  state.cashEntries.slice(0, RECENT_ENTRY_LIMIT).forEach((entry) => {
+  state.cashEntries.slice(0, 10).forEach((entry) => {
     const item = document.createElement("article");
     const topLine = document.createElement("div");
-    const amount = document.createElement("span");
-    const meta = document.createElement("p");
-    const address = document.createElement("p");
-    const notes = document.createElement("p");
+    const amount = document.createElement("strong");
+    const meta = document.createElement("span");
 
     item.className = "entry-item";
     topLine.className = "entry-topline";
     amount.className = "entry-amount";
     meta.className = "entry-meta";
-    address.className = "entry-address";
-    notes.className = "entry-notes";
-
     amount.textContent = formatMoney(entry.amount);
-    meta.textContent = dateTimeFormatter.format(new Date(entry.createdAt));
-
+    meta.textContent = formatDateTime(entry.createdAt);
     topLine.append(amount, meta);
     item.append(topLine);
 
     if (entry.address) {
-      address.textContent = compactAddress(entry.address);
+      const address = document.createElement("p");
+      address.className = "entry-address";
+      address.textContent = compactDestinationLabel(entry.address);
       item.append(address);
     }
 
     if (entry.notes) {
+      const notes = document.createElement("p");
+      notes.className = "entry-notes";
       notes.textContent = entry.notes;
       item.append(notes);
     }
@@ -446,204 +780,54 @@ function renderCashList() {
 }
 
 function handleExportPdf() {
-  if (!state.cashEntries.length) {
-    const message = "No hay registros para exportar en PDF.";
-    setInlineStatus(elements.exportStatus, message, "warning");
-    showToast(message, "warning");
-    return;
+  try {
+    if (!state.cashEntries.length) {
+      throw new Error("No hay registros para exportar en PDF.");
+    }
+
+    exportCashEntriesPdf(state.cashEntries);
+    setInlineStatus(elements.exportStatus, "PDF exportado correctamente.", "success");
+    showToast("PDF exportado.", "success");
+  } catch (error) {
+    setInlineStatus(elements.exportStatus, error.message, "danger");
+    showToast(error.message, "danger");
   }
-
-  const jsPdfNamespace = window.jspdf;
-
-  if (!jsPdfNamespace || typeof jsPdfNamespace.jsPDF !== "function") {
-    const message = "La librería de PDF no está disponible.";
-    setInlineStatus(elements.exportStatus, message, "danger");
-    showToast(message, "danger");
-    return;
-  }
-
-  const { jsPDF } = jsPdfNamespace;
-  const doc = new jsPDF({
-    unit: "pt",
-    format: "a4",
-  });
-
-  if (typeof doc.autoTable !== "function") {
-    const message = "La tabla PDF no está disponible.";
-    setInlineStatus(elements.exportStatus, message, "danger");
-    showToast(message, "danger");
-    return;
-  }
-
-  const exportDate = new Date();
-  const totalGeneral = sumBy(state.cashEntries, (entry) => entry.amount);
-
-  doc.setFillColor(9, 10, 13);
-  doc.rect(0, 0, 595.28, 100, "F");
-  doc.setTextColor(245, 247, 250);
-  doc.setFont("helvetica", "bold");
-  doc.setFontSize(20);
-  doc.text("Rider Hub · Efectivo", 40, 42);
-  doc.setFont("helvetica", "normal");
-  doc.setFontSize(10);
-  doc.setTextColor(196, 202, 211);
-  doc.text(`Exportado: ${dateTimeFormatter.format(exportDate)}`, 40, 64);
-  doc.text(`Total general: ${formatMoney(totalGeneral)}`, 40, 80);
-
-  const body = state.cashEntries.map((entry) => [
-    dateTimeFormatter.format(new Date(entry.createdAt)),
-    formatMoney(entry.amount),
-    compactAddress(entry.address || "Sin dirección"),
-    entry.notes || "—",
-  ]);
-
-  doc.autoTable({
-    startY: 120,
-    head: [["Fecha y hora", "Monto", "Dirección", "Observación"]],
-    body,
-    theme: "grid",
-    headStyles: {
-      fillColor: [17, 19, 22],
-      textColor: [245, 247, 250],
-      lineColor: [38, 42, 48],
-      fontStyle: "bold",
-    },
-    styles: {
-      fillColor: [255, 255, 255],
-      textColor: [22, 24, 28],
-      lineColor: [220, 225, 232],
-      cellPadding: 8,
-      fontSize: 9.5,
-      overflow: "linebreak",
-    },
-    alternateRowStyles: {
-      fillColor: [248, 250, 252],
-    },
-    columnStyles: {
-      0: { cellWidth: 110 },
-      1: { cellWidth: 80 },
-      2: { cellWidth: 165 },
-      3: { cellWidth: 150 },
-    },
-    margin: {
-      left: 40,
-      right: 40,
-    },
-  });
-
-  doc.save(buildExportFileName("pdf"));
-
-  const message = "PDF exportado correctamente.";
-  setInlineStatus(elements.exportStatus, message, "success");
-  showToast(message, "success");
 }
 
 function handleExportExcel() {
-  if (!state.cashEntries.length) {
-    const message = "No hay registros para exportar en Excel.";
-    setInlineStatus(elements.exportStatus, message, "warning");
-    showToast(message, "warning");
-    return;
+  try {
+    if (!state.cashEntries.length) {
+      throw new Error("No hay registros para exportar en Excel.");
+    }
+
+    exportCashEntriesExcel(state.cashEntries);
+    setInlineStatus(elements.exportStatus, "Excel exportado correctamente.", "success");
+    showToast("Excel exportado.", "success");
+  } catch (error) {
+    setInlineStatus(elements.exportStatus, error.message, "danger");
+    showToast(error.message, "danger");
   }
-
-  if (!window.XLSX) {
-    const message = "La librería de Excel no está disponible.";
-    setInlineStatus(elements.exportStatus, message, "danger");
-    showToast(message, "danger");
-    return;
-  }
-
-  const rows = state.cashEntries.map((entry) => ({
-    "Fecha y hora": dateTimeFormatter.format(new Date(entry.createdAt)),
-    Monto: Number(entry.amount),
-    Dirección: compactAddress(entry.address || ""),
-    Observación: entry.notes || "",
-  }));
-
-  const workbook = window.XLSX.utils.book_new();
-  const sheet = window.XLSX.utils.json_to_sheet(rows);
-
-  sheet["!cols"] = [
-    { wch: 18 },
-    { wch: 12 },
-    { wch: 34 },
-    { wch: 28 },
-  ];
-
-  window.XLSX.utils.book_append_sheet(workbook, sheet, "Efectivo");
-  window.XLSX.writeFile(workbook, buildExportFileName("xlsx"), {
-    compression: true,
-  });
-
-  const message = "Excel exportado correctamente.";
-  setInlineStatus(elements.exportStatus, message, "success");
-  showToast(message, "success");
-}
-
-function buildNeuqenDestination(rawText) {
-  const cleaned = processAddressInput(rawText).replace(/\s*,\s*/g, ", ");
-
-  if (!cleaned) {
-    return {
-      ok: false,
-      reason: "No hay una dirección para abrir.",
-    };
-  }
-
-  const normalized = normalizeMatchText(cleaned);
-  const blockedLocality = FORBIDDEN_LOCALITIES.find((item) => item.pattern.test(normalized));
-
-  if (blockedLocality) {
-    return {
-      ok: false,
-      reason: `La dirección parece pertenecer a ${blockedLocality.label}. Rider Hub solo abre Neuquén Capital.`,
-    };
-  }
-
-  let stripped = cleaned
-    .replace(/\bNeuqu[eé]n(?:\s+Capital)?\b/gi, "")
-    .replace(/\bNQN\b/gi, "")
-    .replace(/\bArgentina\b/gi, "")
-    .replace(/\bProvincia(?:\s+de|\s+del)?\s+Neuqu[eé]n\b/gi, "")
-    .replace(/\s*,\s*/g, ", ")
-    .replace(/\s{2,}/g, " ")
-    .replace(/(?:,\s*){2,}/g, ", ")
-    .replace(/(?:^,\s*|\s*,\s*$)/g, "")
-    .trim();
-
-  if (stripped.length < 3) {
-    return {
-      ok: false,
-      reason: "Sumá calle y altura antes de abrir Maps.",
-    };
-  }
-
-  return {
-    ok: true,
-    label: stripped,
-    destination: `${stripped}, ${CANONICAL_CITY}`,
-  };
 }
 
 function loadCashEntries() {
-  const cachedEntries = normalizeCashEntries(readStorage(STORAGE_KEYS.cashEntries, null));
+  const cachedEntries = normalizeCashEntries(readJsonStorage(APP_CONFIG.storageKeys.cashEntries, null));
 
   if (cachedEntries.length) {
     return cachedEntries;
   }
 
-  const migratedEntries = migrateLegacyOrders(readStorage(STORAGE_KEYS.legacyOrders, []));
+  const migratedEntries = migrateLegacyOrders(readJsonStorage(APP_CONFIG.storageKeys.legacyOrders, []));
 
   if (migratedEntries.length) {
-    writeStorage(STORAGE_KEYS.cashEntries, migratedEntries);
+    writeJsonStorage(APP_CONFIG.storageKeys.cashEntries, migratedEntries);
   }
 
   return migratedEntries;
 }
 
 function migrateLegacyOrders(items) {
-  return sortEntriesDescending(
-    items
+  return sortByNewest(
+    (Array.isArray(items) ? items : [])
       .map((item) => {
         const amount = Number(item?.amount);
         const createdAt = new Date(item?.createdAt);
@@ -652,62 +836,25 @@ function migrateLegacyOrders(items) {
           return null;
         }
 
-        if (item?.paymentMethod === "transferencia") {
+        if (String(item?.paymentMethod || "").toLowerCase() === "transferencia") {
           return null;
         }
 
         return {
-          id: processAddressInput(item?.id) || `cash-${createdAt.getTime()}`,
+          id: String(item?.id || `cash-${createdAt.getTime()}`),
           amount,
           createdAt: createdAt.toISOString(),
           address: "",
-          notes: processAddressInput(item?.notes),
+          notes: String(item?.notes || "").trim(),
         };
       })
       .filter(Boolean)
   );
 }
 
-function normalizeAddressHistory(items) {
-  if (!Array.isArray(items)) {
-    return [];
-  }
-
-  const seenAddresses = new Set();
-
-  return items
-    .map((item) => {
-      const address = processAddressInput(item?.address || item);
-      const openedAt = new Date(item?.openedAt || Date.now());
-
-      if (!address || Number.isNaN(openedAt.getTime())) {
-        return null;
-      }
-
-      const lookupKey = address.toLowerCase();
-
-      if (seenAddresses.has(lookupKey)) {
-        return null;
-      }
-
-      seenAddresses.add(lookupKey);
-
-      return {
-        address,
-        openedAt: openedAt.toISOString(),
-      };
-    })
-    .filter(Boolean)
-    .slice(0, MAX_HISTORY_ITEMS);
-}
-
 function normalizeCashEntries(items) {
-  if (!Array.isArray(items)) {
-    return [];
-  }
-
-  return sortEntriesDescending(
-    items
+  return sortByNewest(
+    (Array.isArray(items) ? items : [])
       .map((item) => {
         const amount = Number(item?.amount);
         const createdAt = new Date(item?.createdAt);
@@ -716,24 +863,54 @@ function normalizeCashEntries(items) {
           return null;
         }
 
-        const rawAddress = processAddressInput(item?.address);
-        let normalizedAddress = "";
+        let address = "";
+        const rawAddress = String(item?.address || "").trim();
 
         if (rawAddress) {
-          const addressResult = buildNeuqenDestination(rawAddress);
-          normalizedAddress = addressResult.ok ? addressResult.destination : "";
+          const preparedAddress = prepareAddressSearch(rawAddress);
+          address = preparedAddress.ok ? `${preparedAddress.searchLabel}, ${APP_CONFIG.cityQuery}` : "";
         }
 
         return {
-          id: processAddressInput(item?.id) || `cash-${createdAt.getTime()}`,
+          id: String(item?.id || `cash-${createdAt.getTime()}`),
           amount,
           createdAt: createdAt.toISOString(),
-          address: normalizedAddress,
-          notes: processAddressInput(item?.notes),
+          address,
+          notes: String(item?.notes || "").trim(),
         };
       })
       .filter(Boolean)
   );
+}
+
+function normalizeRouteFeedback(items) {
+  return sortByNewest(
+    (Array.isArray(items) ? items : [])
+      .map((item) => {
+        const createdAt = new Date(item?.createdAt);
+
+        if (Number.isNaN(createdAt.getTime())) {
+          return null;
+        }
+
+        return {
+          id: String(item?.id || `feedback-${createdAt.getTime()}`),
+          type: String(item?.type || "").trim(),
+          createdAt: createdAt.toISOString(),
+          destinationLabel: String(item?.destinationLabel || "").trim(),
+          strategy: String(item?.strategy || "balanced"),
+          strategyLabel: String(item?.strategyLabel || buildStrategyLabel(item?.strategy || "balanced")),
+          routeRisk: String(item?.routeRisk || ""),
+        };
+      })
+      .filter(Boolean)
+  );
+}
+
+function updateStrategyButtons() {
+  elements.strategyButtons.forEach((button) => {
+    button.classList.toggle("is-active", button.dataset.strategy === state.selectedStrategy);
+  });
 }
 
 function setInlineStatus(element, message, tone = "default") {
@@ -755,7 +932,6 @@ function setInlineStatus(element, message, tone = "default") {
 
 function showToast(message, tone = "default") {
   const toast = document.createElement("div");
-
   toast.className = "toast";
 
   if (tone !== "default") {
@@ -771,12 +947,105 @@ function showToast(message, tone = "default") {
 }
 
 function createEmptyState(message) {
-  const stateBlock = document.createElement("div");
+  const node = document.createElement("div");
+  node.className = "empty-state";
+  node.textContent = message;
+  return node;
+}
 
-  stateBlock.className = "empty-state";
-  stateBlock.textContent = message;
+function setRiskCalloutTone(label) {
+  elements.riskCallout.classList.remove("is-normal", "is-caution", "is-high", "is-night");
+  elements.riskCallout.classList.add(`is-${getRiskTone(label)}`);
+}
 
-  return stateBlock;
+function createTinyPill(label, tone = "accent") {
+  const pill = document.createElement("span");
+  pill.className = "tiny-pill";
+  pill.classList.add(`is-${tone}`);
+  pill.textContent = label;
+  return pill;
+}
+
+function getRiskTone(label) {
+  if (label === "No recomendado de noche") {
+    return "night";
+  }
+
+  if (label === "Alta precaucion") {
+    return "danger";
+  }
+
+  if (label === "Precaucion") {
+    return "warning";
+  }
+
+  return "accent";
+}
+
+function getActiveRoute() {
+  return state.routes.find((route) => route.id === state.activeRouteId) || null;
+}
+
+function buildPointFeature(point, extraProperties = {}) {
+  return {
+    type: "Feature",
+    properties: {
+      ...extraProperties,
+    },
+    geometry: {
+      type: "Point",
+      coordinates: [point.lng, point.lat],
+    },
+  };
+}
+
+function buildProviderLabel(provider) {
+  if (provider === "openrouteservice") {
+    return "Provider: openrouteservice";
+  }
+
+  if (provider === "osrm-demo") {
+    return "Provider: OSRM demo";
+  }
+
+  return "Provider: esperando";
+}
+
+function buildOriginCopy() {
+  return state.origin.isApproximate
+    ? "origen de referencia (centro)"
+    : "origen con tu ubicacion actual";
+}
+
+function buildStrategyLabel(strategy) {
+  if (strategy === "fast") {
+    return "Rapida";
+  }
+
+  if (strategy === "cautious") {
+    return "Prudente";
+  }
+
+  return "Equilibrada";
+}
+
+function buildFeedbackLabel(type) {
+  if (type === "good") {
+    return "Ruta buena";
+  }
+
+  if (type === "awkward") {
+    return "Ruta incomoda";
+  }
+
+  return "Zona complicada";
+}
+
+function parsePositiveNumber(value) {
+  const raw = String(value ?? "").trim().replace(",", ".");
+  const parsed = Number(raw);
+
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : null;
 }
 
 function registerServiceWorker() {
@@ -797,119 +1066,3 @@ function registerServiceWorker() {
     }
   });
 }
-
-function readStorage(key, fallback) {
-  try {
-    const rawValue = window.localStorage.getItem(key);
-
-    if (!rawValue) {
-      return fallback;
-    }
-
-    return JSON.parse(rawValue);
-  } catch (error) {
-    return fallback;
-  }
-}
-
-function writeStorage(key, value) {
-  try {
-    window.localStorage.setItem(key, JSON.stringify(value));
-    return true;
-  } catch (error) {
-    showToast("No pude guardar en el almacenamiento local de este navegador.", "warning");
-    return false;
-  }
-}
-
-function parseNumber(value, options = {}) {
-  const normalizedValue = processAddressInput(value);
-
-  if (!normalizedValue) {
-    return options.required ? null : null;
-  }
-
-  const parsedNumber = Number(normalizedValue.replace(",", "."));
-  const allowZero = options.allowZero !== false;
-
-  if (!Number.isFinite(parsedNumber)) {
-    return false;
-  }
-
-  if (allowZero ? parsedNumber < 0 : parsedNumber <= 0) {
-    return false;
-  }
-
-  return parsedNumber;
-}
-
-function normalizeMatchText(value) {
-  return processAddressInput(value)
-    .normalize("NFD")
-    .replace(/[\u0300-\u036f]/g, "")
-    .toLowerCase();
-}
-
-function compactAddress(value) {
-  const address = processAddressInput(value);
-
-  if (!address) {
-    return "";
-  }
-
-  const suffix = `, ${CANONICAL_CITY}`;
-  return address.endsWith(suffix) ? address.slice(0, -suffix.length) : address;
-}
-
-function formatMoney(value) {
-  return `$ ${currencyFormatter.format(value || 0)}`;
-}
-
-function startOfDay(date) {
-  const nextDate = new Date(date);
-
-  nextDate.setHours(0, 0, 0, 0);
-  return nextDate;
-}
-
-function addDays(date, days) {
-  const nextDate = new Date(date);
-
-  nextDate.setDate(nextDate.getDate() + days);
-  return nextDate;
-}
-
-function getWeekStart(date) {
-  const localStart = startOfDay(date);
-  const day = localStart.getDay();
-  const diff = day === 0 ? -6 : 1 - day;
-
-  localStart.setDate(localStart.getDate() + diff);
-  return localStart;
-}
-
-function isWithinRange(value, start, end) {
-  const date = new Date(value);
-
-  return date >= start && date < end;
-}
-
-function sumBy(collection, iteratee) {
-  return collection.reduce((total, item) => total + Number(iteratee(item) || 0), 0);
-}
-
-function sortEntriesDescending(entries) {
-  return [...entries].sort((left, right) => new Date(right.createdAt) - new Date(left.createdAt));
-}
-
-function buildExportFileName(extension) {
-  const dateStamp = new Date().toISOString().slice(0, 10);
-  return `rider-hub-efectivo-${dateStamp}.${extension}`;
-}
-
-function getDateTimeLocalValue(date = new Date()) {
-  const localDate = new Date(date.getTime() - date.getTimezoneOffset() * 60000);
-  return localDate.toISOString().slice(0, 16);
-}
-
-console.info(`Engine activo: ${getActiveEngine()}`);

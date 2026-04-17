@@ -10,92 +10,194 @@
     <meta name="mobile-web-app-capable" content="yes">
     <meta name="apple-mobile-web-app-capable" content="yes">
     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
-    <meta name="apple-mobile-web-app-title" content="Rider Hub">
+    <meta name="apple-mobile-web-app-title" content="Rider Maps Neuquen">
     <meta
       name="description"
-      content="PWA para riders en Neuquén Capital: abrir direcciones validadas en Google Maps, registrar efectivo y exportar reportes."
+      content="Mapa rider-first para Neuquen Capital: geocoding acotado, rutas en bici, riesgo operativo y efectivo exportable."
     >
-    <title>Rider Hub</title>
+    <title>Rider Maps Neuquen</title>
     <link rel="icon" href="icons/icon.svg" type="image/svg+xml">
     <link rel="icon" href="icons/icon-192.png" sizes="192x192" type="image/png">
     <link rel="apple-touch-icon" href="icons/apple-touch-icon.png" sizes="180x180">
     <link rel="manifest" href="manifest.webmanifest">
+    <link rel="stylesheet" href="vendor/maplibre-gl.css">
     <link rel="stylesheet" href="styles.css">
   </head>
   <body>
     <div class="app-shell">
       <header class="topbar">
         <div class="title-block">
-          <p class="eyebrow">Neuquén Capital</p>
-          <h1>Rider Hub</h1>
+          <p class="eyebrow">Neuquen Capital · Bici · Rider-first</p>
+          <h1>Rider Maps Neuquen</h1>
           <p class="hero-supporting">
-            Maps rápido, efectivo simple y exportación real. Nada más.
+            La app busca, ubica, compara rutas y te avisa si el recorrido cruza zonas operativas
+            mas delicadas antes de abrir navegacion externa.
           </p>
         </div>
       </header>
 
       <main class="content">
         <section class="view is-active" id="view-maps" aria-labelledby="tab-maps">
-          <article class="panel panel-hero">
-            <div class="section-copy">
-              <p class="section-kicker">Maps</p>
-              <h2>Abrí solo direcciones de Neuquén Capital</h2>
-              <p class="supporting-text">
-                Si la dirección no especifica ciudad, Rider Hub asume Neuquén Capital. Si parece
-                ser otra localidad, bloquea la apertura para evitar errores en la calle.
+          <section class="map-stage">
+            <div id="map" class="map-canvas" aria-label="Mapa de Neuquen Capital"></div>
+
+            <article class="glass-panel search-panel">
+              <div class="section-copy section-copy-tight">
+                <p class="section-kicker">Fase 1 · Geocoding</p>
+                <h2>Busca un destino real dentro de Neuquen Capital</h2>
+              </div>
+
+              <div class="field">
+                <label for="address-input">Direccion del cliente</label>
+                <textarea
+                  id="address-input"
+                  class="input input-area input-area-search"
+                  rows="3"
+                  placeholder="Ej.: Mendoza 850"
+                  autocomplete="street-address"
+                  spellcheck="false"
+                ></textarea>
+              </div>
+
+              <div class="control-grid">
+                <button class="button button-secondary" id="paste-address-button" type="button">
+                  Pegar direccion
+                </button>
+                <button class="button button-primary" id="search-address-button" type="button">
+                  Buscar
+                </button>
+                <button class="button button-secondary" id="use-location-button" type="button">
+                  Mi ubicacion
+                </button>
+                <button class="button button-primary" id="calculate-route-button" type="button">
+                  Calcular ruta
+                </button>
+              </div>
+
+              <p class="inline-status" id="map-status" role="status" aria-live="polite">
+                Mapa listo. Busca un destino y usa tu ubicacion para una ruta mas precisa.
+              </p>
+            </article>
+          </section>
+
+          <article class="panel route-panel">
+            <div class="section-head">
+              <div>
+                <p class="section-kicker">Fase 2 · Routing</p>
+                <h2>Sugerencia rider-first</h2>
+              </div>
+              <span class="provider-pill" id="route-provider-label">Provider: esperando</span>
+            </div>
+
+            <p class="secondary-text" id="route-selection-copy">
+              Define un destino y calcula la ruta para ver distancia, tiempo, riesgo y variantes.
+            </p>
+
+            <div class="strategy-switch" role="tablist" aria-label="Estrategia de ruta">
+              <button class="strategy-button is-active" type="button" data-strategy="fast">
+                Rapida
+              </button>
+              <button class="strategy-button" type="button" data-strategy="balanced">
+                Equilibrada
+              </button>
+              <button class="strategy-button" type="button" data-strategy="cautious">
+                Prudente
+              </button>
+            </div>
+
+            <div class="summary-strip">
+              <article class="metric-pill">
+                <span>Distancia</span>
+                <strong id="route-distance">Sin ruta</strong>
+              </article>
+              <article class="metric-pill">
+                <span>Tiempo</span>
+                <strong id="route-duration">Sin ruta</strong>
+              </article>
+              <article class="metric-pill">
+                <span>Riesgo</span>
+                <strong id="route-risk-value">Sin evaluar</strong>
+              </article>
+            </div>
+
+            <div class="risk-callout" id="risk-callout">
+              <div class="risk-heading-row">
+                <strong id="route-risk-label">Normal</strong>
+                <span class="warning-badge" id="route-warning-badge" hidden>Atencion</span>
+              </div>
+              <p class="secondary-text" id="route-reasons">
+                La evaluacion cruza la ruta con una base local de riesgo operativo semilla.
               </p>
             </div>
 
+            <div class="section-head section-head-tight">
+              <div>
+                <p class="section-kicker">Variantes</p>
+                <h2>Alternativas disponibles</h2>
+              </div>
+            </div>
+            <div class="route-list" id="route-list" aria-live="polite"></div>
+
             <div class="action-row">
-              <button class="button button-primary" id="clipboard-open-button" type="button">
-                Leer portapapeles y abrir Maps
-              </button>
-              <button class="button button-secondary" id="reopen-last-button" type="button">
-                Reabrir última
+              <button
+                class="button button-primary"
+                id="open-external-nav-button"
+                type="button"
+                disabled
+              >
+                Abrir navegacion externa
               </button>
             </div>
 
-            <div class="field">
-              <label for="address-input">Dirección</label>
-              <textarea
-                id="address-input"
-                class="input input-area"
-                rows="4"
-                placeholder="Ej.: Mendoza 850"
-                autocomplete="street-address"
-                spellcheck="false"
-              ></textarea>
+            <div class="feedback-strip" aria-label="Feedback rapido de ruta">
+              <span class="feedback-label">Feedback rapido</span>
+              <button class="feedback-button" type="button" data-feedback="good">
+                Ruta buena
+              </button>
+              <button class="feedback-button" type="button" data-feedback="awkward">
+                Ruta incomoda
+              </button>
+              <button class="feedback-button" type="button" data-feedback="zone">
+                Zona complicada
+              </button>
             </div>
-
-            <button class="button button-primary button-large" id="open-maps-button" type="button">
-              Abrir en Google Maps
-            </button>
-
-            <p class="inline-status" id="map-status" role="status" aria-live="polite">
-              Listo para abrir un pedido dentro de Neuquén Capital.
-            </p>
           </article>
 
           <article class="panel panel-list">
             <div class="section-head">
               <div>
-                <p class="section-kicker">Historial</p>
-                <h2>Direcciones recientes</h2>
+                <p class="section-kicker">Fase 3 · Memoria</p>
+                <h2>Destinos y feedback recientes</h2>
               </div>
-              <span class="muted-text">Últimas 10 aperturas</span>
+              <span class="muted-text">Persistencia local</span>
+            </div>
+
+            <div class="section-head section-head-tight">
+              <div>
+                <p class="section-kicker">Historial</p>
+                <h2>Ultimos destinos</h2>
+              </div>
             </div>
             <div class="history-list" id="history-list" aria-live="polite"></div>
+
+            <div class="section-head section-head-tight">
+              <div>
+                <p class="section-kicker">Feedback</p>
+                <h2>Ultimos reportes del rider</h2>
+              </div>
+            </div>
+            <div class="feedback-list" id="feedback-list" aria-live="polite"></div>
           </article>
         </section>
 
-        <section class="view" id="view-efectivo" aria-labelledby="tab-efectivo" hidden>
+        <section class="view" id="view-cash" aria-labelledby="tab-cash" hidden>
           <article class="panel panel-form">
             <div class="section-head">
               <div>
                 <p class="section-kicker">Efectivo</p>
-                <h2>Registrar cobro rápido</h2>
+                <h2>Caja rapida y exportable</h2>
               </div>
-              <span class="muted-text">Operación con una mano</span>
+              <span class="muted-text">Modulo secundario</span>
             </div>
 
             <form id="cash-form" novalidate>
@@ -129,9 +231,9 @@
 
               <div class="field">
                 <div class="field-label-row">
-                  <label for="cash-address">Dirección asociada</label>
+                  <label for="cash-address">Direccion asociada</label>
                   <button class="mini-action" id="use-last-address-button" type="button">
-                    Usar última
+                    Usar ultimo destino
                   </button>
                 </div>
                 <input
@@ -147,7 +249,7 @@
               </div>
 
               <div class="field">
-                <label for="cash-notes">Observación</label>
+                <label for="cash-notes">Observacion</label>
                 <textarea
                   id="cash-notes"
                   name="notes"
@@ -163,7 +265,7 @@
               </div>
 
               <p class="inline-status" id="cash-status" role="status" aria-live="polite">
-                Guardá un registro corto cada vez que cobres efectivo.
+                Registra efectivo, exporta y sigue operando.
               </p>
             </form>
           </article>
@@ -172,21 +274,21 @@
             <div class="section-head">
               <div>
                 <p class="section-kicker">Resumen</p>
-                <h2>Efectivo del día</h2>
+                <h2>Lo justo para cerrar caja</h2>
               </div>
               <span class="muted-text" id="cash-summary-range">Semana actual</span>
             </div>
 
-            <div class="summary-grid simple-summary">
-              <article class="stat-card">
-                <span>Total del día</span>
+            <div class="summary-strip cash-summary-strip">
+              <article class="metric-pill">
+                <span>Total del dia</span>
                 <strong id="stat-day-total">$ 0</strong>
               </article>
-              <article class="stat-card">
-                <span>Registros del día</span>
+              <article class="metric-pill">
+                <span>Registros del dia</span>
                 <strong id="stat-day-count">0</strong>
               </article>
-              <article class="stat-card stat-card-wide">
+              <article class="metric-pill">
                 <span>Total semanal</span>
                 <strong id="stat-week-total">$ 0</strong>
               </article>
@@ -202,13 +304,13 @@
             </div>
 
             <p class="inline-status" id="export-status" role="status" aria-live="polite">
-              Exportá los registros cuando necesites cerrar caja o compartir un resumen.
+              Exporta cuando necesites enviar o guardar el cierre.
             </p>
 
             <div class="section-head section-head-tight">
               <div>
                 <p class="section-kicker">Recientes</p>
-                <h2>Últimos registros</h2>
+                <h2>Ultimos registros</h2>
               </div>
             </div>
             <div class="entry-list" id="cash-list" aria-live="polite"></div>
@@ -225,9 +327,9 @@
               <path d="M15.4 5.5v11" />
             </svg>
           </span>
-          <span class="nav-label">Maps</span>
+          <span class="nav-label">Mapa</span>
         </button>
-        <button class="nav-button" id="tab-efectivo" type="button" data-view="efectivo">
+        <button class="nav-button" id="tab-cash" type="button" data-view="cash">
           <span class="nav-icon" aria-hidden="true">
             <svg viewBox="0 0 24 24" focusable="false">
               <rect x="3.75" y="6.25" width="16.5" height="11.5" rx="3.25" />
@@ -241,13 +343,14 @@
     </div>
 
     <div class="toast-stack" id="toast-stack" aria-live="polite" aria-atomic="true"></div>
+
     <noscript>
       <div class="noscript-banner">
-        Rider Hub necesita JavaScript habilitado para abrir Maps, guardar efectivo y exportar
-        reportes.
+        Rider Maps Neuquen necesita JavaScript habilitado para mapa, rutas y efectivo.
       </div>
     </noscript>
 
+    <script src="vendor/maplibre-gl.js"></script>
     <script src="vendor/jspdf.umd.min.js"></script>
     <script src="vendor/jspdf.plugin.autotable.min.js"></script>
     <script src="vendor/xlsx.full.min.js"></script>
