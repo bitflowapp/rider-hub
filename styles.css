@@ -36,6 +36,10 @@
   box-sizing: border-box;
 }
 
+[hidden] {
+  display: none !important;
+}
+
 html {
   min-height: 100%;
   scroll-behavior: smooth;
@@ -464,6 +468,13 @@ textarea:focus-visible {
   gap: 0.5rem;
 }
 
+.mode-strip,
+.memory-tag-grid {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.55rem;
+}
+
 .address-row {
   display: grid;
   gap: 0.65rem;
@@ -579,6 +590,30 @@ textarea:focus-visible {
 
 .inline-status.is-danger {
   color: var(--danger);
+}
+
+.mode-chip {
+  display: inline-flex;
+  align-items: center;
+  min-height: 2rem;
+  padding: 0.4rem 0.72rem;
+  border-radius: 999px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  background: rgba(255, 255, 255, 0.03);
+  color: var(--muted);
+  font-size: 0.78rem;
+  white-space: nowrap;
+}
+
+.mode-chip.is-active {
+  color: var(--text);
+  border-color: rgba(125, 200, 255, 0.24);
+  background: rgba(125, 200, 255, 0.1);
+}
+
+.mode-chip.is-complete {
+  color: var(--success);
+  border-color: rgba(142, 210, 191, 0.2);
 }
 
 .state-topline strong,
@@ -744,6 +779,53 @@ textarea:focus-visible {
 
 .tiny-pill.is-accent {
   color: var(--text-soft);
+}
+
+.deviation-alert {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 0.85rem;
+  padding: 0.9rem 1rem;
+  border-radius: var(--radius-lg);
+  border: 1px solid rgba(211, 169, 108, 0.18);
+  background: linear-gradient(180deg, rgba(29, 24, 15, 0.68), rgba(17, 14, 9, 0.82));
+}
+
+.deviation-alert strong {
+  display: block;
+  color: var(--text);
+  font-size: 0.96rem;
+  letter-spacing: -0.02em;
+}
+
+.deviation-alert .button {
+  width: auto;
+  min-width: 8.75rem;
+}
+
+.memory-tag-button {
+  min-height: 2.25rem;
+  padding: 0.6rem 0.82rem;
+  border-radius: 999px;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  background: rgba(255, 255, 255, 0.035);
+  color: var(--text-soft);
+  transition:
+    transform 160ms ease,
+    border-color 180ms ease,
+    background-color 180ms ease,
+    color 180ms ease;
+}
+
+.memory-tag-button:hover:not(:disabled) {
+  transform: translateY(-1px);
+}
+
+.memory-tag-button.is-active {
+  border-color: rgba(125, 200, 255, 0.24);
+  background: rgba(125, 200, 255, 0.1);
+  color: var(--accent);
 }
 
 .insight-drawer,
@@ -1130,13 +1212,18 @@ textarea:focus-visible {
 
   .trip-strip,
   .trip-sheet-head,
-  .operational-strip {
+  .operational-strip,
+  .deviation-alert {
     flex-direction: column;
     align-items: stretch;
   }
 
   .trip-strip-metrics {
     justify-content: flex-start;
+  }
+
+  .deviation-alert .button {
+    width: 100%;
   }
 
   .field-grid,

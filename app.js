@@ -1,9 +1,17 @@
 import { getActiveEngine } from "./engine/engine.js";
+import { getPlaceMemoryTagLabel } from "./data/place_memory_schema.js";
 import { exportCashEntriesExcel, exportCashEntriesPdf } from "./services/export_service.js";
 import { geocodeAddress, reverseGeocode } from "./services/geocoding_service.js";
 import { createMapService } from "./services/map_service.js";
+import {
+  buildPlaceMemoryEntry,
+  getPlaceMemories,
+  savePlaceMemory,
+  summarizePlaceMemoryForDestination,
+} from "./services/place_memory_service.js";
 import { evaluateOperationalRisk, getRiskTone, getRiskZones } from "./services/risk_service.js";
 import { getAlternativeRoutes, getRouteOptions, summarizeRoute } from "./services/routing_service.js";
+import { clearSessionState, loadSessionState, saveSessionState } from "./services/session_state_service.js";
 import {
   buildDestinationMemoryProfile,
   buildTripMemoryEntry,
@@ -36,6 +44,7 @@ import {
   sumBy,
 } from "./utils/format_utils.js";
 import { readJsonStorage, writeJsonStorage } from "./utils/storage_utils.js";
+import { getPointToRouteDistanceMeters, haversineDistanceMeters, isValidPoint } from "./utils/geo_utils.js";
 import {
   calculateTripDelta,
   formatTripDelta,
@@ -53,6 +62,7 @@ const state = {
   ),
   routeFeedback: normalizeRouteFeedback(readJsonStorage(APP_CONFIG.storageKeys.routeFeedback, [])),
   tripMemories: getTripMemories(),
+  placeMemories: getPlaceMemories(),
   cashEntries: [],
   origin: { ...APP_CONFIG.referenceOrigin },
   destination: null,
@@ -64,9 +74,18 @@ const state = {
   activeProviderNote: "",
   destinationProfile: null,
   destinationMemorySummary: null,
+  placeMemorySummary: null,
+  placeMemoryDraft: {
+    tags: [],
+    note: "",
+  },
   activeTrip: null,
   pendingTripReview: null,
   tripTickerId: 0,
+  trackingWatchId: 0,
+  sessionPersistTimeoutId: 0,
+  autoRecalcTimeoutId: 0,
+  deviationAlert: null,
   lastSearchInput: "",
   isBusy: false,
   routeError: "",
@@ -91,6 +110,7 @@ const elements = {
   mapStatus: document.querySelector("#map-status"),
   interpretedAddress: document.querySelector("#interpreted-address"),
   addressStateBadge: document.querySelector("#address-state-badge"),
+  modeChips: Array.from(document.querySelectorAll("[data-trip-stage]")),
   resolutionStatus: document.querySelector("#resolution-status"),
   operationalRisk: document.querySelector("#operational-risk"),
   recommendedRoute: document.querySelector("#recommended-route"),
@@ -111,11 +131,21 @@ const elements = {
   tripStatusCopy: document.querySelector("#trip-status-copy"),
   tripEstimatedPill: document.querySelector("#trip-estimated-pill"),
   tripDeltaPill: document.querySelector("#trip-delta-pill"),
+  deviationAlert: document.querySelector("#deviation-alert"),
+  deviationAlertTitle: document.querySelector("#deviation-alert-title"),
+  deviationAlertCopy: document.querySelector("#deviation-alert-copy"),
+  recalculateRouteButton: document.querySelector("#recalculate-route-button"),
   routeList: document.querySelector("#route-list"),
   historyList: document.querySelector("#history-list"),
   feedbackList: document.querySelector("#feedback-list"),
   tripMemoryList: document.querySelector("#trip-memory-list"),
   tripMemoryCount: document.querySelector("#trip-memory-count"),
+  placeMemorySummary: document.querySelector("#place-memory-summary"),
+  placeMemoryNoteInput: document.querySelector("#place-memory-note-input"),
+  savePlaceMemoryButton: document.querySelector("#save-place-memory-button"),
+  memoryTagButtons: Array.from(document.querySelectorAll(".memory-tag-button")),
+  placeMemoryList: document.querySelector("#place-memory-list"),
+  placeMemoryCount: document.querySelector("#place-memory-count"),
   cashForm: document.querySelector("#cash-form"),
   cashAmount: document.querySelector("#cash-amount"),
   cashDateTime: document.querySelector("#cash-datetime"),
@@ -148,7 +178,9 @@ init();
 
 async function init() {
   state.cashEntries = loadCashEntries();
+  restoreRecoveredState();
   elements.cashDateTime.value = getDateTimeLocalValue();
+  elements.addressInput.value = state.lastSearchInput || compactDestinationLabel(state.destination?.label || "");
 
   bindEvents();
   updateStrategyButtons();
@@ -156,6 +188,8 @@ async function init() {
   renderHistory();
   renderFeedback();
   renderTripMemories();
+  renderPlaceMemoryList();
+  renderPlaceMemoryComposer();
   renderCashView();
   renderOperationalPanel();
   syncCashAddressWithLastDestination();
@@ -169,6 +203,14 @@ async function init() {
     syncMapLayers();
     scheduleMapResizeBurst();
     setInlineStatus(elements.mapStatus, "Mapa listo. Busca un destino dentro de Neuquen Capital.", "success");
+
+    if (state.activeTrip) {
+      resumeRecoveredTrip();
+    }
+
+    if (state.pendingTripReview) {
+      openPostTripDialog();
+    }
   } catch (error) {
     console.error(error);
     setInlineStatus(
@@ -209,11 +251,22 @@ function bindEvents() {
     });
   });
 
+  elements.memoryTagButtons.forEach((button) => {
+    button.addEventListener("click", () => {
+      togglePlaceMemoryTag(button.dataset.placeTag || "");
+    });
+  });
+
   elements.addressInput.addEventListener("keydown", async (event) => {
     if (event.key === "Enter" && !event.shiftKey) {
       event.preventDefault();
       await handleSearchAddress();
     }
+  });
+
+  elements.placeMemoryNoteInput.addEventListener("input", () => {
+    state.placeMemoryDraft.note = elements.placeMemoryNoteInput.value.trim();
+    renderPlaceMemoryComposer();
   });
 
   elements.pasteAddressButton.addEventListener("click", handlePasteAddress);
@@ -222,10 +275,17 @@ function bindEvents() {
   elements.primaryActionButton.addEventListener("click", handlePrimaryAction);
   elements.showAlternativeButton.addEventListener("click", handleShowAlternativeRoute);
   elements.openExternalNavButton.addEventListener("click", openExternalNavigation);
+  elements.recalculateRouteButton.addEventListener("click", () => {
+    void handleRecalculateRoute("manual");
+  });
+  elements.savePlaceMemoryButton.addEventListener("click", handleSavePlaceMemory);
   elements.jumpHistoryButton.addEventListener("click", () => scrollToSection(elements.historyAnchor));
   elements.jumpCashButton.addEventListener("click", () => scrollToSection(elements.cashAnchor));
   elements.dismissTripDialogButton.addEventListener("click", closePostTripDialog);
   elements.postTripForm.addEventListener("submit", handlePostTripSubmit);
+  elements.postTripDialog.addEventListener("close", () => {
+    renderOperationalPanel();
+  });
 
   elements.cashForm.addEventListener("submit", handleCashSubmit);
   elements.useLastAddressButton.addEventListener("click", applyLastDestinationToCashForm);
@@ -281,6 +341,13 @@ async function handleSearchAddress() {
     return;
   }
 
+  if (state.pendingTripReview) {
+    const message = "Cierra el viaje pendiente antes de cambiar de destino.";
+    setInlineStatus(elements.mapStatus, message, "warning");
+    showToast(message, "warning");
+    return;
+  }
+
   if (!rawInput) {
     const message = "Ingresa o pega una direccion para empezar.";
     setInlineStatus(elements.mapStatus, message, "warning");
@@ -303,6 +370,8 @@ async function handleSearchAddress() {
     state.recommendedRouteId = "";
     state.destinationProfile = null;
     state.destinationMemorySummary = null;
+    state.placeMemorySummary = null;
+    state.placeMemoryDraft = { tags: [], note: "" };
     renderOperationalPanel();
 
     setInlineStatus(
@@ -317,6 +386,8 @@ async function handleSearchAddress() {
       state.destination = null;
       state.activeProvider = result.provider || "";
       state.activeProviderNote = "";
+      state.placeMemorySummary = null;
+      state.placeMemoryDraft = { tags: [], note: "" };
       state.addressAnalysis = {
         ...(result.interpretation || {}),
         status: result.status || result.interpretation?.status || "doubtful",
@@ -373,6 +444,13 @@ async function handleUseCurrentLocation() {
     return;
   }
 
+  if (state.pendingTripReview) {
+    const message = "Cierra el viaje pendiente antes de mover el origen.";
+    setInlineStatus(elements.mapStatus, message, "warning");
+    showToast(message, "warning");
+    return;
+  }
+
   if (!navigator.geolocation) {
     const message = "Este navegador no ofrece geolocalizacion.";
     setInlineStatus(elements.mapStatus, message, "warning");
@@ -424,20 +502,22 @@ async function handleUseCurrentLocation() {
   );
 }
 
-async function recalculateRouteForCurrentDestination(source) {
+async function recalculateRouteForCurrentDestination(source, originOverride = null) {
   if (!state.destination) {
     return;
   }
 
   await withBusyState(async () => {
-    await calculateRoutesForCurrentDestination(source);
+    await calculateRoutesForCurrentDestination(source, originOverride);
   });
 }
 
-async function calculateRoutesForCurrentDestination(source) {
+async function calculateRoutesForCurrentDestination(source, originOverride = null) {
   if (!state.destination) {
     return;
   }
+
+  const routeOrigin = originOverride || state.origin;
 
   setInlineStatus(
     elements.mapStatus,
@@ -447,7 +527,7 @@ async function calculateRoutesForCurrentDestination(source) {
 
   try {
     const routeResponse = await getRouteOptions({
-      origin: state.origin,
+      origin: routeOrigin,
       destination: state.destination.coordinates,
     });
 
@@ -485,12 +565,23 @@ async function calculateRoutesForCurrentDestination(source) {
       operationalRisk: analyzedRoutes[0]?.operationalRisk || null,
     });
     applyRouteLearning(analyzedRoutes);
+
+    if (source === "manual-recalc" || source === "auto-recalc") {
+      state.activeRouteId = state.recommendedRouteId || state.activeRouteId;
+    }
+
+    synchronizeActiveTripWithCurrentRoute();
+    clearDeviationAlert();
     state.routeError = "";
     syncMapLayers();
     renderOperationalPanel();
 
     if (source === "strategy") {
       showToast(`Ruta ${buildStrategyLabel(state.selectedStrategy).toLowerCase()} actualizada.`, "success");
+    } else if (source === "manual-recalc") {
+      showToast("Ruta recalculada desde tu posicion actual.", "success");
+    } else if (source === "auto-recalc") {
+      showToast("Ruta recalculada automaticamente por desvio.", "success");
     }
   } catch (error) {
     console.error(error);
@@ -563,11 +654,16 @@ async function handlePrimaryAction() {
 
   if (uiState.primaryActionKind === "finish-trip") {
     finishActiveTrip();
+    return;
+  }
+
+  if (uiState.primaryActionKind === "open-closing") {
+    openPostTripDialog();
   }
 }
 
 function handleShowAlternativeRoute() {
-  if (state.activeTrip) {
+  if (state.activeTrip || state.pendingTripReview) {
     return;
   }
 
@@ -590,6 +686,10 @@ function handleShowAlternativeRoute() {
 }
 
 function selectSuggestedRoute() {
+  if (state.activeTrip || state.pendingTripReview) {
+    return;
+  }
+
   const suggestedRoute = getSuggestedRoute();
 
   if (!suggestedRoute) {
@@ -631,8 +731,24 @@ function syncMapLayers() {
   state.mapService.setRoutes(state.routes, state.activeRouteId, {
     origin: state.origin,
     destination: state.destination,
+    trackingPoint: state.activeTrip?.currentLocation || null,
   });
+  state.mapService.setTracking(
+    state.activeTrip?.currentLocation ? buildPointFeature(state.activeTrip.currentLocation, { kind: "tracking" }) : null,
+    buildTrackingTrailFeature()
+  );
   queueMapResize();
+}
+
+function syncTrackingLayersOnly() {
+  if (!state.mapService) {
+    return;
+  }
+
+  state.mapService.setTracking(
+    state.activeTrip?.currentLocation ? buildPointFeature(state.activeTrip.currentLocation, { kind: "tracking" }) : null,
+    buildTrackingTrailFeature()
+  );
 }
 
 function renderOperationalPanel() {
@@ -642,6 +758,7 @@ function renderOperationalPanel() {
 
   elements.appStatusPill.textContent = uiState.headerBadge;
   setBadgeTone(elements.appStatusPill, uiState.badgeTone);
+  renderModeStrip(uiState.modeStage);
 
   elements.interpretedAddress.textContent =
     state.addressAnalysis?.interpretedLine || "Esperando direccion";
@@ -681,24 +798,37 @@ function renderOperationalPanel() {
   elements.tripDeltaPill.textContent = state.activeTrip
     ? `Actual: ${formatDuration(elapsedSeconds)}`
     : "Delta: pendiente";
+  elements.deviationAlert.hidden = !state.deviationAlert;
+  elements.deviationAlertTitle.textContent = state.deviationAlert?.title || "Sigues en ruta";
+  elements.deviationAlertCopy.textContent =
+    state.deviationAlert?.copy ||
+    "Si te alejas de la ruta activa, te voy a ofrecer recalcular sin spamear.";
+  elements.recalculateRouteButton.disabled = Boolean(state.isBusy || !state.activeTrip);
+  elements.placeMemorySummary.textContent =
+    state.placeMemorySummary?.hasMemory
+      ? `${state.placeMemorySummary.headline} | ${state.placeMemorySummary.detail}`
+      : "Todavia no guardaste favoritas ni observaciones para este destino, calle o zona.";
 
   elements.primaryActionButton.textContent = uiState.primaryActionLabel;
   elements.primaryActionButton.disabled = uiState.primaryActionDisabled;
   elements.showAlternativeButton.disabled =
-    state.activeTrip || getAlternativeRoutes(state.routes, state.activeRouteId).length === 0;
-  elements.openExternalNavButton.disabled = !state.destination;
+    state.activeTrip || state.pendingTripReview || getAlternativeRoutes(state.routes, state.activeRouteId).length === 0;
+  elements.openExternalNavButton.disabled = !state.destination || Boolean(state.pendingTripReview);
 
   elements.feedbackButtons.forEach((button) => {
-    button.disabled = !activeRoute;
+    button.disabled = !activeRoute || Boolean(state.pendingTripReview);
   });
 
   elements.strategyButtons.forEach((button) => {
-    button.disabled = Boolean(state.activeTrip);
+    button.disabled = Boolean(state.activeTrip || state.pendingTripReview);
   });
 
+  renderPlaceMemoryComposer();
+  renderPlaceMemoryList();
   renderReasonList(buildReasonItems());
   renderRouteList(getSortedRoutes());
   queueMapResize(40);
+  scheduleSessionSave();
 }
 
 function deriveUiState() {
@@ -718,6 +848,7 @@ function deriveUiState() {
     headerBadge: "Esperando",
     addressBadge: "Esperando",
     badgeTone: "neutral",
+    modeStage: "waiting",
     resolutionStatus: "Esperando direccion",
     operationalRisk: "Sin evaluar",
     recommendedRoute: "Todavia no calculada",
@@ -734,6 +865,7 @@ function deriveUiState() {
       ...base,
       headerBadge: "Interpretando",
       addressBadge: "Procesando",
+      modeStage: "waiting",
       resolutionStatus: "Interpretando direccion",
       recommendedRoute: "Calculando",
       recommendationTitle: "Interpretando direccion",
@@ -747,6 +879,7 @@ function deriveUiState() {
       headerBadge: "Fuera",
       addressBadge: "Fuera de alcance",
       badgeTone: "danger",
+      modeStage: "waiting",
       resolutionStatus: "Fuera de Neuquen Capital",
       recommendationTitle: "Direccion fuera de alcance",
       recommendationCopy: state.addressAnalysis?.reason || "Solo se aceptan destinos dentro de Neuquen Capital.",
@@ -762,6 +895,7 @@ function deriveUiState() {
       headerBadge: "Dudosa",
       addressBadge: "Revisar",
       badgeTone: "warning",
+      modeStage: "waiting",
       resolutionStatus: "Direccion dudosa",
       recommendationTitle: "Direccion necesita revision",
       recommendationCopy:
@@ -778,6 +912,7 @@ function deriveUiState() {
       headerBadge: "Valida",
       addressBadge: "Valida",
       badgeTone: "success",
+      modeStage: "waiting",
       resolutionStatus: "Direccion valida",
       recommendedRoute: `${buildStrategyLabel(state.selectedStrategy)} pendiente`,
       recommendationTitle: "Destino validado",
@@ -795,6 +930,7 @@ function deriveUiState() {
       headerBadge: "En viaje",
       addressBadge: "Siguiendo",
       badgeTone: "success",
+      modeStage: "tracking",
       resolutionStatus: "Seguimiento activo",
       operationalRisk: activeRoute?.operationalRisk?.overallLabel || "Sin evaluar",
       recommendedRoute: currentLabel,
@@ -808,20 +944,44 @@ function deriveUiState() {
     };
   }
 
+  if (stage === "closing") {
+    return {
+      ...base,
+      headerBadge: "Cierre",
+      addressBadge: "Guardar",
+      badgeTone: "warning",
+      modeStage: "closing",
+      resolutionStatus: "Cierre de viaje",
+      operationalRisk: activeRoute?.operationalRisk?.overallLabel || "Sin evaluar",
+      recommendedRoute: currentLabel,
+      recommendationTitle: "Falta cerrar este viaje",
+      recommendationCopy:
+        state.pendingTripReview?.delta
+          ? `Real ${formatDuration(state.pendingTripReview.actualDurationSeconds)} | ${formatTripDelta(state.pendingTripReview.delta)}`
+          : "Guarda feedback breve para consolidar el aprendizaje de este viaje.",
+      primaryActionLabel: "Abrir cierre",
+      primaryActionKind: "open-closing",
+      primaryActionDisabled: false,
+    };
+  }
+
   if (stage === "night") {
     return {
       ...base,
       headerBadge: "Noche",
       addressBadge: "Nocturno",
       badgeTone: "night",
+      modeStage: "route-ready",
       resolutionStatus: "No recomendado de noche",
       operationalRisk: activeRoute?.operationalRisk?.overallLabel || "No recomendado de noche",
       recommendedRoute: suggestedRoute ? suggestedLabel : currentLabel,
       recommendationTitle: hasSuggestedAlternative ? "Conviene pasar a la sugerida" : "Precaucion nocturna",
       recommendationCopy:
-        suggestedRoute?.recommendation ||
-        activeRoute?.operationalRisk?.recommendation ||
-        "Conviene bajar exposicion o revisar horario.",
+        state.placeMemorySummary?.shouldAvoidAtNight
+          ? state.placeMemorySummary.detail
+          : suggestedRoute?.recommendation ||
+            activeRoute?.operationalRisk?.recommendation ||
+            "Conviene bajar exposicion o revisar horario.",
       primaryActionLabel: hasSuggestedAlternative ? "Usar ruta sugerida" : "Seguir esta ruta",
       primaryActionKind: hasSuggestedAlternative ? "suggested" : "start-trip",
       primaryActionDisabled: false,
@@ -834,6 +994,7 @@ function deriveUiState() {
       headerBadge: "Atencion",
       addressBadge: "Atencion",
       badgeTone: "warning",
+      modeStage: "route-ready",
       resolutionStatus: "Ruta con atencion",
       operationalRisk: activeRoute?.operationalRisk?.overallLabel || "Precaucion",
       recommendedRoute: suggestedRoute ? suggestedLabel : currentLabel,
@@ -854,6 +1015,7 @@ function deriveUiState() {
       headerBadge: "Lista",
       addressBadge: "Ruta lista",
       badgeTone: "success",
+      modeStage: "route-ready",
       resolutionStatus: "Ruta lista",
       operationalRisk: activeRoute?.operationalRisk?.overallLabel || "Normal",
       recommendedRoute: suggestedRoute ? suggestedLabel : currentLabel,
@@ -872,6 +1034,10 @@ function deriveUiState() {
 function getOperationalStage() {
   if (state.isBusy) {
     return "interpreting";
+  }
+
+  if (state.pendingTripReview) {
+    return "closing";
   }
 
   if (state.addressAnalysis?.status === "outside") {
@@ -937,7 +1103,7 @@ function renderRouteList(routes) {
     }
 
     button.addEventListener("click", () => {
-      if (state.activeTrip) {
+      if (state.activeTrip || state.pendingTripReview) {
         return;
       }
 
@@ -989,6 +1155,7 @@ function buildReasonItems() {
     state.destination ? "Destino dentro de Neuquen Capital." : "",
     ...(activeRoute?.operationalRisk?.reasons || []),
     state.destinationMemorySummary?.hasHistory ? state.destinationMemorySummary.label : "",
+    state.placeMemorySummary?.hasMemory ? state.placeMemorySummary.headline : "",
     activeRoute?.historyMetrics?.nightStrength ? "Mejor rendimiento historico en este horario." : "",
   ];
 
@@ -1088,6 +1255,61 @@ function renderTripMemories() {
   });
 }
 
+function renderPlaceMemoryList() {
+  elements.placeMemoryList.replaceChildren();
+  elements.placeMemoryCount.textContent = `${state.placeMemories.length} guardada${state.placeMemories.length === 1 ? "" : "s"}`;
+
+  if (!state.placeMemories.length) {
+    elements.placeMemoryList.append(
+      createEmptyState("Tus favoritas, accesos y notas del lugar van a quedar aqui.")
+    );
+    return;
+  }
+
+  state.placeMemories.slice(0, APP_CONFIG.recentPlaceMemoryLimit).forEach((entry) => {
+    const item = document.createElement("article");
+    const topLine = document.createElement("div");
+    const label = document.createElement("strong");
+    const meta = document.createElement("span");
+    const copy = document.createElement("p");
+
+    item.className = "feedback-item";
+    topLine.className = "feedback-topline";
+    label.textContent = compactDestinationLabel(entry.normalizedAddress);
+    meta.className = "feedback-meta";
+    meta.textContent = formatDateTime(entry.updatedAt);
+    copy.textContent = [
+      entry.tags.slice(0, 3).map(getPlaceMemoryTagLabel).join(" | "),
+      entry.note,
+    ]
+      .filter(Boolean)
+      .join(" | ");
+
+    topLine.append(label, meta);
+    item.append(topLine, copy);
+    elements.placeMemoryList.append(item);
+  });
+}
+
+function renderPlaceMemoryComposer() {
+  const safeDraft = state.placeMemoryDraft || { tags: [], note: "" };
+
+  elements.memoryTagButtons.forEach((button) => {
+    const isActive = safeDraft.tags.includes(button.dataset.placeTag || "");
+    button.classList.toggle("is-active", isActive);
+    button.setAttribute("aria-pressed", String(isActive));
+    button.disabled = !state.destinationProfile;
+  });
+
+  if (elements.placeMemoryNoteInput.value !== safeDraft.note) {
+    elements.placeMemoryNoteInput.value = safeDraft.note;
+  }
+
+  elements.placeMemoryNoteInput.disabled = !state.destinationProfile;
+  elements.savePlaceMemoryButton.disabled =
+    !state.destinationProfile || (!safeDraft.tags.length && !safeDraft.note.trim());
+}
+
 function renderAddressSuggestions() {
   elements.addressSuggestions.replaceChildren();
 
@@ -1121,6 +1343,60 @@ function saveRouteFeedback(type) {
   showToast("Feedback guardado.", "success");
 }
 
+function togglePlaceMemoryTag(tagId) {
+  if (!tagId || !state.destinationProfile) {
+    return;
+  }
+
+  const nextTags = state.placeMemoryDraft.tags.includes(tagId)
+    ? state.placeMemoryDraft.tags.filter((tag) => tag !== tagId)
+    : [...state.placeMemoryDraft.tags, tagId];
+
+  state.placeMemoryDraft = {
+    ...state.placeMemoryDraft,
+    tags: nextTags,
+  };
+  renderPlaceMemoryComposer();
+}
+
+function handleSavePlaceMemory() {
+  if (!state.destinationProfile) {
+    return;
+  }
+
+  const entry = buildPlaceMemoryEntry({
+    destinationProfile: state.destinationProfile,
+    tags: state.placeMemoryDraft.tags,
+    note: state.placeMemoryDraft.note,
+  });
+
+  const savedEntry = savePlaceMemory(entry);
+
+  if (!savedEntry) {
+    showToast("No pude guardar esta memoria local.", "danger");
+    return;
+  }
+
+  state.placeMemories = getPlaceMemories();
+  refreshPlaceMemoryContext();
+  renderPlaceMemoryList();
+  renderOperationalPanel();
+  showToast("Memoria local guardada.", "success");
+}
+
+function refreshPlaceMemoryContext(shouldResetDraft = true) {
+  state.placeMemorySummary = state.destinationProfile
+    ? summarizePlaceMemoryForDestination(state.destinationProfile, getHourContext())
+    : null;
+
+  if (shouldResetDraft) {
+    state.placeMemoryDraft = {
+      tags: [...(state.placeMemorySummary?.exactEntry?.tags || [])],
+      note: state.placeMemorySummary?.exactEntry?.note || "",
+    };
+  }
+}
+
 function applyRouteLearning(routes) {
   const previousActiveRouteId = state.activeTrip ? state.activeRouteId : "";
   const intelligence = rankRoutesWithMemory({
@@ -1134,9 +1410,12 @@ function applyRouteLearning(routes) {
   state.destinationProfile = intelligence.destinationProfile;
   state.destinationMemorySummary = intelligence.destinationSummary;
   state.recommendedRouteId = intelligence.recommendedRouteId;
+  refreshPlaceMemoryContext();
 
   const stillHasPreviousRoute = previousActiveRouteId && intelligence.routes.some((route) => route.id === previousActiveRouteId);
   state.activeRouteId = stillHasPreviousRoute ? previousActiveRouteId : intelligence.recommendedRouteId || intelligence.routes[0]?.id || "";
+
+  applyPlaceMemoryBias();
 }
 
 function startActiveTrip() {
@@ -1146,6 +1425,7 @@ function startActiveTrip() {
     return;
   }
 
+  clearPendingReview();
   state.activeTrip = startTripTimer({
     estimatedDurationSeconds: activeRoute.durationSeconds,
     provider: state.activeProvider,
@@ -1174,8 +1454,14 @@ function startActiveTrip() {
         riskLabel: route.operationalRisk?.overallLabel,
       })),
   });
+  state.activeTrip.currentLocation = !state.origin.isApproximate ? { ...state.origin, capturedAt: new Date().toISOString() } : null;
+  state.activeTrip.trackPoints = state.activeTrip.currentLocation ? [{ ...state.activeTrip.currentLocation }] : [];
+  state.activeTrip.lastAutoRecalcAt = "";
   state.activeTrip.delta = calculateTripDelta(state.activeTrip.estimatedDurationSeconds, 0);
+  startTrackingWatch();
   startTripTicker();
+  clearDeviationAlert();
+  syncTrackingLayersOnly();
   renderOperationalPanel();
   showToast("Seguimiento iniciado. Voy a comparar estimado vs real.", "success");
 }
@@ -1187,7 +1473,11 @@ function finishActiveTrip() {
 
   state.pendingTripReview = stopTripTimer(state.activeTrip);
   state.activeTrip = null;
+  stopTrackingWatch();
   stopTripTicker();
+  cancelAutoRecalc();
+  clearDeviationAlert();
+  syncTrackingLayersOnly();
   renderOperationalPanel();
   openPostTripDialog();
 }
@@ -1219,7 +1509,10 @@ function openPostTripDialog() {
     return;
   }
 
-  elements.postTripForm.reset();
+  if (elements.postTripDialog.open) {
+    return;
+  }
+
   elements.postTripSummary.textContent = `Estimado ${formatDuration(
     state.pendingTripReview.estimatedDurationSeconds
   )} | real ${formatDuration(state.pendingTripReview.actualDurationSeconds)} | ${formatTripDelta(
@@ -1234,9 +1527,6 @@ function openPostTripDialog() {
 }
 
 function closePostTripDialog() {
-  state.pendingTripReview = null;
-  elements.postTripForm.reset();
-
   if (elements.postTripDialog.close) {
     elements.postTripDialog.close();
   } else {
@@ -1272,15 +1562,231 @@ function handlePostTripSubmit(event) {
   }
 
   state.tripMemories = getTripMemories();
-  closePostTripDialog();
+  renderTripMemories();
+  discardPendingReview();
 
   if (state.routes.length && state.destinationProfile) {
     rerankCurrentRoutes("memory");
-  } else {
-    renderTripMemories();
   }
 
   showToast("Viaje guardado en memoria operativa.", "success");
+}
+
+function synchronizeActiveTripWithCurrentRoute() {
+  if (!state.activeTrip) {
+    return;
+  }
+
+  const activeRoute = getActiveRoute();
+
+  if (!activeRoute) {
+    return;
+  }
+
+  state.activeTrip = {
+    ...state.activeTrip,
+    estimatedDurationSeconds: activeRoute.durationSeconds,
+    provider: state.activeProvider,
+    strategy: activeRoute.displayStrategy || activeRoute.strategy || state.selectedStrategy,
+    routeId: activeRoute.id,
+    routeFingerprint: activeRoute.routeFingerprint,
+    routeSummary: activeRoute.recommendation || activeRoute.baseSummary,
+    distanceMeters: activeRoute.distanceMeters,
+    destinationProfile: state.destinationProfile,
+    destinationRiskLabel: activeRoute.operationalRisk?.destinationRisk,
+    routeRiskLabel: activeRoute.operationalRisk?.routeRisk,
+    operationalRiskLabel: activeRoute.operationalRisk?.overallLabel,
+    riskScore: activeRoute.operationalRisk?.score || 0,
+    alternatives: getSortedRoutes()
+      .filter((route) => route.id !== activeRoute.id)
+      .slice(0, 4)
+      .map((route) => ({
+        id: route.id,
+        label: route.alternativeTitle || buildStrategyLabel(route.displayStrategy || route.strategy),
+        strategy: route.displayStrategy || route.strategy,
+        durationSeconds: route.durationSeconds,
+        distanceMeters: route.distanceMeters,
+        riskLabel: route.operationalRisk?.overallLabel,
+      })),
+  };
+}
+
+function startTrackingWatch() {
+  if (!navigator.geolocation) {
+    return;
+  }
+
+  stopTrackingWatch();
+
+  state.trackingWatchId = navigator.geolocation.watchPosition(
+    (position) => {
+      handleTrackingPosition(position);
+    },
+    (error) => {
+      console.warn("No pude actualizar seguimiento GPS.", error);
+    },
+    {
+      enableHighAccuracy: true,
+      maximumAge: 3500,
+      timeout: 12000,
+    }
+  );
+}
+
+function stopTrackingWatch() {
+  if (state.trackingWatchId && navigator.geolocation) {
+    navigator.geolocation.clearWatch(state.trackingWatchId);
+    state.trackingWatchId = 0;
+  }
+}
+
+function handleTrackingPosition(position) {
+  if (!state.activeTrip) {
+    return;
+  }
+
+  const nextPoint = {
+    lng: position.coords.longitude,
+    lat: position.coords.latitude,
+    accuracy: Number(position.coords.accuracy || 0),
+    capturedAt: new Date(position.timestamp || Date.now()).toISOString(),
+  };
+
+  state.activeTrip.currentLocation = nextPoint;
+  state.activeTrip.trackPoints = appendTrackingPoint(state.activeTrip.trackPoints, nextPoint);
+  state.activeTrip.delta = calculateTripDelta(
+    state.activeTrip.estimatedDurationSeconds,
+    getElapsedTripSeconds(state.activeTrip)
+  );
+  maybeHandleDeviation(nextPoint);
+  syncTrackingLayersOnly();
+  renderOperationalPanel();
+}
+
+function appendTrackingPoint(existingPoints, nextPoint) {
+  const points = Array.isArray(existingPoints) ? [...existingPoints] : [];
+  const lastPoint = points[points.length - 1];
+  const distanceFromLast = lastPoint ? haversineDistanceMeters(lastPoint, nextPoint) : Number.POSITIVE_INFINITY;
+
+  if (distanceFromLast < APP_CONFIG.trackingPointSpacingMeters) {
+    if (points.length) {
+      points[points.length - 1] = nextPoint;
+    } else {
+      points.push(nextPoint);
+    }
+  } else {
+    points.push(nextPoint);
+  }
+
+  return points.slice(-APP_CONFIG.trackingPathLimit);
+}
+
+function maybeHandleDeviation(currentPoint) {
+  const activeRoute = getActiveRoute();
+
+  if (!activeRoute || !isValidPoint(currentPoint)) {
+    clearDeviationAlert();
+    return;
+  }
+
+  if (
+    Number.isFinite(currentPoint.accuracy) &&
+    currentPoint.accuracy > APP_CONFIG.deviationAccuracyLimitMeters
+  ) {
+    clearDeviationAlert();
+    return;
+  }
+
+  const elapsedSeconds = getElapsedTripSeconds(state.activeTrip);
+
+  if (elapsedSeconds < APP_CONFIG.deviationGracePeriodSeconds) {
+    clearDeviationAlert();
+    return;
+  }
+
+  const distanceMeters = getPointToRouteDistanceMeters(currentPoint, activeRoute.geometry);
+
+  if (!Number.isFinite(distanceMeters) || distanceMeters <= APP_CONFIG.deviationThresholdMeters) {
+    clearDeviationAlert();
+    return;
+  }
+
+  const lastAutoRecalcAt = new Date(state.activeTrip.lastAutoRecalcAt || 0).getTime();
+  const now = Date.now();
+  const canAutoRecalc = !lastAutoRecalcAt || now - lastAutoRecalcAt >= APP_CONFIG.deviationAutoRecalcDebounceMs;
+
+  state.deviationAlert = {
+    distanceMeters,
+    title: `Te alejaste ${Math.round(distanceMeters)} m de la ruta`,
+    copy: canAutoRecalc
+      ? "Puedo recalcular solo en unos segundos o lo haces ahora."
+      : "Te ofrezco recalcular, pero estoy frenando el auto-recalculo para no spamear.",
+    detectedAt: new Date(now).toISOString(),
+    canAutoRecalc,
+  };
+
+  if (canAutoRecalc) {
+    scheduleAutoRecalc();
+  }
+}
+
+function scheduleAutoRecalc() {
+  if (state.autoRecalcTimeoutId || !state.activeTrip?.currentLocation) {
+    return;
+  }
+
+  state.autoRecalcTimeoutId = window.setTimeout(() => {
+    state.autoRecalcTimeoutId = 0;
+
+    if (!state.deviationAlert?.canAutoRecalc) {
+      return;
+    }
+
+    void handleRecalculateRoute("auto");
+  }, APP_CONFIG.deviationAutoRecalcDelayMs);
+}
+
+function cancelAutoRecalc() {
+  if (state.autoRecalcTimeoutId) {
+    window.clearTimeout(state.autoRecalcTimeoutId);
+    state.autoRecalcTimeoutId = 0;
+  }
+}
+
+async function handleRecalculateRoute(mode) {
+  if (!state.activeTrip?.currentLocation || !state.destination) {
+    return;
+  }
+
+  cancelAutoRecalc();
+
+  if (mode === "auto") {
+    state.activeTrip.lastAutoRecalcAt = new Date().toISOString();
+  }
+
+  await recalculateRouteForCurrentDestination(
+    mode === "auto" ? "auto-recalc" : "manual-recalc",
+    state.activeTrip.currentLocation
+  );
+}
+
+function clearDeviationAlert() {
+  state.deviationAlert = null;
+  cancelAutoRecalc();
+}
+
+function clearPendingReview() {
+  if (!state.pendingTripReview) {
+    return;
+  }
+
+  state.pendingTripReview = null;
+  elements.postTripForm.reset();
+}
+
+function discardPendingReview() {
+  clearPendingReview();
+  closePostTripDialog();
 }
 
 function pushDestinationHistory(destination) {
@@ -1659,6 +2165,18 @@ function createTinyPill(label, tone = "accent") {
   return pill;
 }
 
+function renderModeStrip(stage) {
+  const stageOrder = ["waiting", "route-ready", "tracking", "closing"];
+  const activeIndex = stageOrder.indexOf(stage);
+
+  elements.modeChips.forEach((chip) => {
+    const chipStage = chip.dataset.tripStage || "";
+    const chipIndex = stageOrder.indexOf(chipStage);
+    chip.classList.toggle("is-active", chipStage === stage);
+    chip.classList.toggle("is-complete", chipIndex !== -1 && chipIndex < activeIndex);
+  });
+}
+
 function getActiveRoute() {
   return state.routes.find((route) => route.id === state.activeRouteId) || null;
 }
@@ -1684,6 +2202,31 @@ function buildPointFeature(point, extraProperties = {}) {
   };
 }
 
+function buildLineFeature(points, extraProperties = {}) {
+  const safePoints = Array.isArray(points)
+    ? points.filter((point) => Number.isFinite(point?.lng) && Number.isFinite(point?.lat))
+    : [];
+
+  if (safePoints.length < 2) {
+    return null;
+  }
+
+  return {
+    type: "Feature",
+    properties: {
+      ...extraProperties,
+    },
+    geometry: {
+      type: "LineString",
+      coordinates: safePoints.map((point) => [point.lng, point.lat]),
+    },
+  };
+}
+
+function buildTrackingTrailFeature() {
+  return buildLineFeature(state.activeTrip?.trackPoints || [], { kind: "tracking-trail" });
+}
+
 function buildProviderLabel(provider) {
   if (provider === "openrouteservice") {
     return "Provider: openrouteservice";
@@ -1697,6 +2240,10 @@ function buildProviderLabel(provider) {
 }
 
 function buildOriginCopy() {
+  if (state.activeTrip?.currentLocation) {
+    return "Origen: seguimiento actual";
+  }
+
   return state.origin.isApproximate
     ? "Origen: centro de Neuquen (referencia)"
     : `Origen: ${compactDestinationLabel(state.origin.label || "Mi ubicacion actual")}`;
@@ -1756,6 +2303,175 @@ function getMemoryTone(score) {
   }
 
   return "warning";
+}
+
+function applyPlaceMemoryBias() {
+  if (!state.placeMemorySummary?.shouldAvoidAtNight || !state.routes.length) {
+    return;
+  }
+
+  const cautiousRoute = state.routes.find((route) => route.displayStrategy === "cautious");
+
+  if (!cautiousRoute) {
+    return;
+  }
+
+  state.routes = state.routes
+    .map((route) => {
+      if (route.id === cautiousRoute.id) {
+        return {
+          ...route,
+          riderScore: route.riderScore + 4,
+          recommendation: "Memoria local: mejor evitar este punto de noche. Conviene la prudente.",
+        };
+      }
+
+      if (route.displayStrategy !== "cautious") {
+        return {
+          ...route,
+          riderScore: route.riderScore - 2.4,
+        };
+      }
+
+      return route;
+    })
+    .sort((left, right) => right.riderScore - left.riderScore);
+
+  state.recommendedRouteId = state.routes[0]?.id || state.recommendedRouteId;
+
+  if (!state.activeTrip) {
+    state.activeRouteId = state.recommendedRouteId || state.activeRouteId;
+  }
+}
+
+function restoreRecoveredState() {
+  const session = loadSessionState();
+
+  if (session) {
+    state.selectedStrategy = session.selectedStrategy || state.selectedStrategy;
+    state.origin = session.origin || state.origin;
+    state.destination = session.destination;
+    state.addressAnalysis = session.addressAnalysis;
+    state.routes = Array.isArray(session.routes) ? session.routes : [];
+    state.activeRouteId = session.activeRouteId || "";
+    state.recommendedRouteId = session.recommendedRouteId || "";
+    state.activeProvider = session.activeProvider || "";
+    state.activeProviderNote = session.activeProviderNote || "";
+    state.destinationProfile = session.destinationProfile || null;
+    state.destinationMemorySummary = session.destinationMemorySummary || null;
+    state.placeMemorySummary = session.placeMemorySummary || null;
+    state.lastSearchInput = session.lastSearchInput || session.addressInput || "";
+    state.routeError = session.routeError || "";
+    state.activeTrip = session.activeTrip || null;
+    state.pendingTripReview = session.pendingTripReview || null;
+    state.deviationAlert = session.deviationAlert || null;
+    refreshPlaceMemoryContext();
+    return;
+  }
+
+  const lastResolvedAddress = readJsonStorage(APP_CONFIG.storageKeys.lastResolvedAddress, null);
+
+  if (!lastResolvedAddress?.ok) {
+    return;
+  }
+
+  state.lastSearchInput = String(lastResolvedAddress.rawInput || "").trim();
+  state.addressAnalysis = lastResolvedAddress.analysis || null;
+  state.destination = lastResolvedAddress.destination || null;
+
+  if (state.destination) {
+    state.destinationProfile = buildDestinationMemoryProfile({
+      rawAddress: state.lastSearchInput,
+      destination: state.destination,
+      addressAnalysis: state.addressAnalysis,
+    });
+    refreshPlaceMemoryContext();
+  }
+}
+
+function resumeRecoveredTrip() {
+  if (!state.activeTrip) {
+    return;
+  }
+
+  if (!Array.isArray(state.activeTrip.trackPoints) || !state.activeTrip.trackPoints.length) {
+    state.activeTrip.trackPoints = state.activeTrip.currentLocation ? [{ ...state.activeTrip.currentLocation }] : [];
+  }
+
+  state.activeTrip.delta = calculateTripDelta(
+    state.activeTrip.estimatedDurationSeconds,
+    getElapsedTripSeconds(state.activeTrip)
+  );
+  startTrackingWatch();
+  startTripTicker();
+  syncMapLayers();
+  setInlineStatus(elements.mapStatus, "Recupere tu viaje activo. Puedes seguir desde donde quedaste.", "success");
+}
+
+function scheduleSessionSave() {
+  if (state.sessionPersistTimeoutId) {
+    return;
+  }
+
+  state.sessionPersistTimeoutId = window.setTimeout(() => {
+    state.sessionPersistTimeoutId = 0;
+    const sessionSnapshot = buildSessionSnapshot();
+
+    if (!sessionSnapshot) {
+      clearSessionState();
+      return;
+    }
+
+    saveSessionState(sessionSnapshot);
+  }, APP_CONFIG.trackingSessionSaveDebounceMs);
+}
+
+function buildSessionSnapshot() {
+  const hasRecoverableState =
+    Boolean(state.destination) || Boolean(state.activeTrip) || Boolean(state.pendingTripReview) || Boolean(state.routes.length);
+
+  if (!hasRecoverableState) {
+    return null;
+  }
+
+  return {
+    addressInput: elements.addressInput.value.trim(),
+    selectedStrategy: state.selectedStrategy,
+    origin: state.origin,
+    destination: state.destination,
+    addressAnalysis: state.addressAnalysis,
+    routes: state.routes.map(serializeRouteForSession).filter(Boolean),
+    activeRouteId: state.activeRouteId,
+    recommendedRouteId: state.recommendedRouteId,
+    activeProvider: state.activeProvider,
+    activeProviderNote: state.activeProviderNote,
+    destinationProfile: state.destinationProfile,
+    destinationMemorySummary: state.destinationMemorySummary,
+    placeMemorySummary: state.placeMemorySummary,
+    lastSearchInput: state.lastSearchInput,
+    routeError: state.routeError,
+    activeTrip: serializeTripForSession(state.activeTrip),
+    pendingTripReview: serializeTripForSession(state.pendingTripReview),
+    deviationAlert: state.deviationAlert,
+  };
+}
+
+function serializeRouteForSession(route) {
+  if (!route) {
+    return null;
+  }
+
+  const { raw, ...safeRoute } = route;
+  return safeRoute;
+}
+
+function serializeTripForSession(trip) {
+  if (!trip) {
+    return null;
+  }
+
+  const { route, ...safeTrip } = trip;
+  return safeTrip;
 }
 
 function parsePositiveNumber(value) {

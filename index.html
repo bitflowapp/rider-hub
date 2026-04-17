@@ -119,6 +119,13 @@
                 </article>
               </div>
 
+              <div class="mode-strip" id="mode-strip" aria-label="Modo viaje">
+                <span class="mode-chip is-active" data-trip-stage="waiting">Esperando direccion</span>
+                <span class="mode-chip" data-trip-stage="route-ready">Ruta lista</span>
+                <span class="mode-chip" data-trip-stage="tracking">Seguimiento activo</span>
+                <span class="mode-chip" data-trip-stage="closing">Cierre de viaje</span>
+              </div>
+
               <div class="decision-block">
                 <p class="mini-label">Recomendacion</p>
                 <h3 id="recommendation-title">Pega una direccion para empezar</h3>
@@ -160,6 +167,19 @@
                 </div>
               </div>
 
+              <div class="deviation-alert" id="deviation-alert" hidden>
+                <div>
+                  <p class="mini-label">Desvio detectado</p>
+                  <strong id="deviation-alert-title">Sigues en ruta</strong>
+                  <p class="provider-note" id="deviation-alert-copy">
+                    Si te alejas de la ruta activa, te voy a ofrecer recalcular sin spamear.
+                  </p>
+                </div>
+                <button class="button button-secondary" id="recalculate-route-button" type="button">
+                  Recalcular
+                </button>
+              </div>
+
               <div class="route-context">
                 <div class="operational-strip">
                   <span id="origin-summary">Origen: referencia</span>
@@ -187,6 +207,48 @@
                 <div class="insight-panel">
                   <p class="provider-note" id="route-provider-note">Provider: esperando</p>
                   <div class="route-list" id="route-list" aria-live="polite"></div>
+                </div>
+              </details>
+
+              <details class="insight-drawer" id="place-memory-drawer">
+                <summary>
+                  <div>
+                    <p class="mini-label">Memoria local</p>
+                    <strong>Favoritas, accesos y notas del lugar</strong>
+                  </div>
+                  <span class="drawer-action">Ver</span>
+                </summary>
+
+                <div class="insight-panel">
+                  <p class="provider-note" id="place-memory-summary">
+                    Todavia no guardaste favoritas ni observaciones para este destino, calle o zona.
+                  </p>
+                  <div class="memory-tag-grid">
+                    <button class="memory-tag-button" type="button" data-place-tag="favorite">Favorita</button>
+                    <button class="memory-tag-button" type="button" data-place-tag="useful_access">Acceso util</button>
+                    <button class="memory-tag-button" type="button" data-place-tag="complicated_building">Edificio complicado</button>
+                    <button class="memory-tag-button" type="button" data-place-tag="awkward_street">Calle incomoda</button>
+                    <button class="memory-tag-button" type="button" data-place-tag="best_entry">Mejor entrada</button>
+                    <button class="memory-tag-button" type="button" data-place-tag="heavy_climb">Subida pesada</button>
+                    <button class="memory-tag-button" type="button" data-place-tag="night_avoid">Evitar de noche</button>
+                  </div>
+
+                  <label class="field">
+                    <span>Observacion corta</span>
+                    <textarea
+                      id="place-memory-note-input"
+                      class="input input-area"
+                      rows="3"
+                      maxlength="180"
+                      placeholder="Ej.: mejor entrada por lateral, timbre falla, subida pesada."
+                    ></textarea>
+                  </label>
+
+                  <div class="cash-actions">
+                    <button class="button button-secondary" id="save-place-memory-button" type="button">
+                      Guardar memoria local
+                    </button>
+                  </div>
                 </div>
               </details>
             </article>
@@ -244,6 +306,14 @@
                     <span class="muted-copy" id="trip-memory-count">0 viajes</span>
                   </div>
                   <div class="feedback-list" id="trip-memory-list" aria-live="polite"></div>
+                </section>
+
+                <section class="subpanel">
+                  <div class="subpanel-head">
+                    <p class="mini-label">Favoritas y accesos</p>
+                    <span class="muted-copy" id="place-memory-count">0 guardadas</span>
+                  </div>
+                  <div class="feedback-list" id="place-memory-list" aria-live="polite"></div>
                 </section>
               </div>
             </article>

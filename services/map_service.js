@@ -77,7 +77,12 @@ export async function createMapService({ containerId, riskZones }) {
         routes: features,
         origin: context.origin,
         destination: context.destination,
+        trackingPoint: context.trackingPoint,
       });
+    },
+    setTracking(pointFeature, trailFeature) {
+      updateSource(map, "tracking-point", featureCollection(pointFeature ? [pointFeature] : []));
+      updateSource(map, "tracking-trail", featureCollection(trailFeature ? [trailFeature] : []));
     },
     fitToContext(context) {
       resizeMap(map);
@@ -185,6 +190,16 @@ function installBaseSources(map, riskZones) {
     data: featureCollection([]),
   });
 
+  map.addSource("tracking-point", {
+    type: "geojson",
+    data: featureCollection([]),
+  });
+
+  map.addSource("tracking-trail", {
+    type: "geojson",
+    data: featureCollection([]),
+  });
+
   map.addLayer({
     id: "origin-halo",
     type: "circle",
@@ -228,6 +243,59 @@ function installBaseSources(map, riskZones) {
       "circle-stroke-width": 2.2,
     },
   });
+
+  map.addLayer({
+    id: "tracking-trail-glow",
+    type: "line",
+    source: "tracking-trail",
+    layout: {
+      "line-cap": "round",
+      "line-join": "round",
+    },
+    paint: {
+      "line-color": "rgba(125,200,255,0.24)",
+      "line-width": 8,
+      "line-opacity": 0.75,
+    },
+  });
+
+  map.addLayer({
+    id: "tracking-trail",
+    type: "line",
+    source: "tracking-trail",
+    layout: {
+      "line-cap": "round",
+      "line-join": "round",
+    },
+    paint: {
+      "line-color": "#7DC8FF",
+      "line-width": 3.4,
+      "line-opacity": 0.86,
+      "line-dasharray": [1.1, 1.6],
+    },
+  });
+
+  map.addLayer({
+    id: "tracking-point-halo",
+    type: "circle",
+    source: "tracking-point",
+    paint: {
+      "circle-radius": 15,
+      "circle-color": "rgba(125,200,255,0.2)",
+    },
+  });
+
+  map.addLayer({
+    id: "tracking-point-layer",
+    type: "circle",
+    source: "tracking-point",
+    paint: {
+      "circle-radius": 6.4,
+      "circle-color": "#7DC8FF",
+      "circle-stroke-color": "#04131B",
+      "circle-stroke-width": 2,
+    },
+  });
 }
 
 function updateSource(map, sourceId, data) {
@@ -243,6 +311,7 @@ function fitMapToContext(map, context) {
   const routes = context.routes || [];
   const origin = context.origin;
   const destination = context.destination;
+  const trackingPoint = context.trackingPoint;
 
   routes.forEach((feature) => {
     const geometry = feature.geometry || {};
@@ -260,6 +329,10 @@ function fitMapToContext(map, context) {
     bounds.extend([destination.coordinates.lng, destination.coordinates.lat]);
   } else if (destination && Number.isFinite(destination.lng) && Number.isFinite(destination.lat)) {
     bounds.extend([destination.lng, destination.lat]);
+  }
+
+  if (trackingPoint && Number.isFinite(trackingPoint.lng) && Number.isFinite(trackingPoint.lat)) {
+    bounds.extend([trackingPoint.lng, trackingPoint.lat]);
   }
 
   if (!bounds.isEmpty()) {
