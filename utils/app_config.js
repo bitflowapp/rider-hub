@@ -26,6 +26,7 @@ export const APP_CONFIG = {
     destinationHistory: "riderMaps.destinationHistory.v3",
     lastStrategy: "riderMaps.lastStrategy.v2",
     routeFeedback: "riderMaps.routeFeedback.v2",
+    tripMemory: "riderMaps.tripMemory.v1",
     cashEntries: "riderHub.cashEntries.v2",
     legacyOrders: "riderHub.orders.v1",
     lastResolvedAddress: "riderMaps.lastResolvedAddress.v1",
@@ -62,7 +63,8 @@ export const APP_CONFIG = {
   strategyOrder: ["fast", "balanced", "cautious"],
   maxHistoryItems: 12,
   recentFeedbackLimit: 8,
-  maxRouteAlternatives: 3,
+  recentTripMemoryLimit: 8,
+  maxRouteAlternatives: 4,
 };
 
 export function getRuntimeConfig() {

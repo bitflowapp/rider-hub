@@ -133,18 +133,43 @@
                   <strong id="route-distance">Sin ruta</strong>
                 </article>
                 <article class="overview-metric">
-                  <span>Tiempo</span>
+                  <span>Tiempo estimado</span>
                   <strong id="route-duration">Sin ruta</strong>
                 </article>
                 <article class="overview-metric">
-                  <span>Origen</span>
-                  <strong id="origin-summary">Referencia</strong>
+                  <span>Tiempo real</span>
+                  <strong id="trip-live-duration">Sin seguimiento</strong>
+                </article>
+                <article class="overview-metric">
+                  <span>Historial</span>
+                  <strong id="route-history-summary">Sin experiencia</strong>
                 </article>
               </div>
 
+              <div class="trip-strip" id="trip-strip" hidden>
+                <div>
+                  <p class="mini-label">Seguimiento actual</p>
+                  <strong id="trip-status-title">Sin viaje activo</strong>
+                  <p class="provider-note" id="trip-status-copy">
+                    Cuando inicies una ruta, comparo estimado vs real y lo guardo para futuras recomendaciones.
+                  </p>
+                </div>
+                <div class="trip-strip-metrics">
+                  <span class="tiny-pill is-accent" id="trip-estimated-pill">Estimado: sin dato</span>
+                  <span class="tiny-pill is-neutral" id="trip-delta-pill">Delta: pendiente</span>
+                </div>
+              </div>
+
               <div class="route-context">
+                <div class="operational-strip">
+                  <span id="origin-summary">Origen: referencia</span>
+                  <span id="route-reliability">Confiabilidad inicial</span>
+                </div>
                 <p class="route-why" id="route-why">
                   Todavia no hay una ruta activa.
+                </p>
+                <p class="provider-note" id="route-history-detail">
+                  Sin experiencia previa suficiente para darle peso fuerte a la memoria.
                 </p>
               </div>
 
@@ -205,10 +230,20 @@
                     <div class="feedback-strip" aria-label="Feedback rapido de ruta">
                       <button class="feedback-button" type="button" data-feedback="good">Ruta buena</button>
                       <button class="feedback-button" type="button" data-feedback="awkward">Ruta incomoda</button>
-                      <button class="feedback-button" type="button" data-feedback="zone">Zona complicada</button>
+                      <button class="feedback-button" type="button" data-feedback="time_loss">Perdi tiempo</button>
+                      <button class="feedback-button" type="button" data-feedback="zone_issue">Zona complicada</button>
+                      <button class="feedback-button" type="button" data-feedback="reuse">La reusaria</button>
                     </div>
                   </div>
                   <div class="feedback-list" id="feedback-list" aria-live="polite"></div>
+                </section>
+
+                <section class="subpanel">
+                  <div class="subpanel-head">
+                    <p class="mini-label">Memoria operativa</p>
+                    <span class="muted-copy" id="trip-memory-count">0 viajes</span>
+                  </div>
+                  <div class="feedback-list" id="trip-memory-list" aria-live="polite"></div>
                 </section>
               </div>
             </article>
@@ -323,6 +358,68 @@
         </section>
       </main>
     </div>
+
+    <dialog class="trip-sheet" id="post-trip-dialog">
+      <form class="trip-sheet-form" id="post-trip-form">
+        <div class="trip-sheet-head">
+          <div>
+            <p class="section-kicker">Cierre breve</p>
+            <h2>¿Como salio este viaje?</h2>
+          </div>
+          <button class="mini-button" id="dismiss-trip-dialog-button" type="button">Cerrar</button>
+        </div>
+
+        <p class="provider-note" id="post-trip-summary">
+          Voy a guardar tiempo real, desvio aproximado y tu feedback para mejorar futuras sugerencias.
+        </p>
+
+        <div class="feedback-check-grid">
+          <label class="feedback-check">
+            <input type="checkbox" name="tripFeedback" value="good">
+            <span>Buena</span>
+          </label>
+          <label class="feedback-check">
+            <input type="checkbox" name="tripFeedback" value="awkward">
+            <span>Incomoda</span>
+          </label>
+          <label class="feedback-check">
+            <input type="checkbox" name="tripFeedback" value="time_loss">
+            <span>Me hizo perder tiempo</span>
+          </label>
+          <label class="feedback-check">
+            <input type="checkbox" name="tripFeedback" value="zone_issue">
+            <span>Zona complicada</span>
+          </label>
+          <label class="feedback-check">
+            <input type="checkbox" name="tripFeedback" value="reuse">
+            <span>La volveria a usar</span>
+          </label>
+        </div>
+
+        <label class="feedback-check feedback-check-wide">
+          <input type="checkbox" name="hadDetour" id="post-trip-detour">
+          <span>Hubo desvio o demora fuera de lo normal</span>
+        </label>
+
+        <label class="field">
+          <span>Observacion corta</span>
+          <textarea
+            id="post-trip-observation"
+            name="observation"
+            class="input input-area"
+            rows="3"
+            maxlength="220"
+            placeholder="Opcional"
+          ></textarea>
+        </label>
+
+        <div class="cash-actions">
+          <button class="button button-secondary" id="save-trip-memory-button" type="submit">
+            Guardar aprendizaje
+          </button>
+        </div>
+      </form>
+    </dialog>
 
     <div class="toast-stack" id="toast-stack" aria-live="polite" aria-atomic="true"></div>
 

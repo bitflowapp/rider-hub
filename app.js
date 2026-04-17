@@ -2,13 +2,16 @@ import { getActiveEngine } from "./engine/engine.js";
 import { exportCashEntriesExcel, exportCashEntriesPdf } from "./services/export_service.js";
 import { geocodeAddress, reverseGeocode } from "./services/geocoding_service.js";
 import { createMapService } from "./services/map_service.js";
+import { evaluateOperationalRisk, getRiskTone, getRiskZones } from "./services/risk_service.js";
+import { getAlternativeRoutes, getRouteOptions, summarizeRoute } from "./services/routing_service.js";
 import {
-  evaluateOperationalRisk,
-  getRiskTone,
-  getRiskZones,
-  scoreRouteForStrategy,
-} from "./services/risk_service.js";
-import { getAlternativeRoutes, getRoute, summarizeRoute } from "./services/routing_service.js";
+  buildDestinationMemoryProfile,
+  buildTripMemoryEntry,
+  buildTripMemoryPreview,
+  getTripMemories,
+  rankRoutesWithMemory,
+  saveTripMemory,
+} from "./services/trip_memory_service.js";
 import { APP_CONFIG } from "./utils/app_config.js";
 import {
   buildDestinationHistoryEntry,
@@ -33,6 +36,14 @@ import {
   sumBy,
 } from "./utils/format_utils.js";
 import { readJsonStorage, writeJsonStorage } from "./utils/storage_utils.js";
+import {
+  calculateTripDelta,
+  formatTripDelta,
+  getElapsedTripSeconds,
+  getHourContext,
+  startTripTimer,
+  stopTripTimer,
+} from "./utils/time_utils.js";
 
 const state = {
   mapService: null,
@@ -41,13 +52,22 @@ const state = {
     readJsonStorage(APP_CONFIG.storageKeys.destinationHistory, readJsonStorage("riderHub.addressHistory.v1", []))
   ),
   routeFeedback: normalizeRouteFeedback(readJsonStorage(APP_CONFIG.storageKeys.routeFeedback, [])),
+  tripMemories: getTripMemories(),
   cashEntries: [],
   origin: { ...APP_CONFIG.referenceOrigin },
   destination: null,
   addressAnalysis: null,
   routes: [],
   activeRouteId: "",
+  recommendedRouteId: "",
   activeProvider: "",
+  activeProviderNote: "",
+  destinationProfile: null,
+  destinationMemorySummary: null,
+  activeTrip: null,
+  pendingTripReview: null,
+  tripTickerId: 0,
+  lastSearchInput: "",
   isBusy: false,
   routeError: "",
 };
@@ -79,12 +99,23 @@ const elements = {
   reasonList: document.querySelector("#reason-list"),
   routeDistance: document.querySelector("#route-distance"),
   routeDuration: document.querySelector("#route-duration"),
+  tripLiveDuration: document.querySelector("#trip-live-duration"),
+  routeHistorySummary: document.querySelector("#route-history-summary"),
   originSummary: document.querySelector("#origin-summary"),
+  routeReliability: document.querySelector("#route-reliability"),
+  routeHistoryDetail: document.querySelector("#route-history-detail"),
   routeWhy: document.querySelector("#route-why"),
   routeProviderNote: document.querySelector("#route-provider-note"),
+  tripStrip: document.querySelector("#trip-strip"),
+  tripStatusTitle: document.querySelector("#trip-status-title"),
+  tripStatusCopy: document.querySelector("#trip-status-copy"),
+  tripEstimatedPill: document.querySelector("#trip-estimated-pill"),
+  tripDeltaPill: document.querySelector("#trip-delta-pill"),
   routeList: document.querySelector("#route-list"),
   historyList: document.querySelector("#history-list"),
   feedbackList: document.querySelector("#feedback-list"),
+  tripMemoryList: document.querySelector("#trip-memory-list"),
+  tripMemoryCount: document.querySelector("#trip-memory-count"),
   cashForm: document.querySelector("#cash-form"),
   cashAmount: document.querySelector("#cash-amount"),
   cashDateTime: document.querySelector("#cash-datetime"),
@@ -101,6 +132,12 @@ const elements = {
   exportPdfButton: document.querySelector("#export-pdf-button"),
   exportExcelButton: document.querySelector("#export-excel-button"),
   exportStatus: document.querySelector("#export-status"),
+  postTripDialog: document.querySelector("#post-trip-dialog"),
+  postTripForm: document.querySelector("#post-trip-form"),
+  postTripSummary: document.querySelector("#post-trip-summary"),
+  dismissTripDialogButton: document.querySelector("#dismiss-trip-dialog-button"),
+  postTripDetour: document.querySelector("#post-trip-detour"),
+  postTripObservation: document.querySelector("#post-trip-observation"),
   toastStack: document.querySelector("#toast-stack"),
 };
 
@@ -118,6 +155,7 @@ async function init() {
   renderAddressSuggestions();
   renderHistory();
   renderFeedback();
+  renderTripMemories();
   renderCashView();
   renderOperationalPanel();
   syncCashAddressWithLastDestination();
@@ -147,7 +185,7 @@ async function init() {
 function bindEvents() {
   elements.strategyButtons.forEach((button) => {
     button.addEventListener("click", async () => {
-      if (state.selectedStrategy === button.dataset.strategy) {
+      if (state.selectedStrategy === button.dataset.strategy || state.activeTrip) {
         return;
       }
 
@@ -155,7 +193,9 @@ function bindEvents() {
       writeJsonStorage(APP_CONFIG.storageKeys.lastStrategy, state.selectedStrategy);
       updateStrategyButtons();
 
-      if (state.destination) {
+      if (state.destination && state.routes.length) {
+        rerankCurrentRoutes("strategy");
+      } else if (state.destination) {
         await recalculateRouteForCurrentDestination("strategy");
       } else {
         renderOperationalPanel();
@@ -184,6 +224,8 @@ function bindEvents() {
   elements.openExternalNavButton.addEventListener("click", openExternalNavigation);
   elements.jumpHistoryButton.addEventListener("click", () => scrollToSection(elements.historyAnchor));
   elements.jumpCashButton.addEventListener("click", () => scrollToSection(elements.cashAnchor));
+  elements.dismissTripDialogButton.addEventListener("click", closePostTripDialog);
+  elements.postTripForm.addEventListener("submit", handlePostTripSubmit);
 
   elements.cashForm.addEventListener("submit", handleCashSubmit);
   elements.useLastAddressButton.addEventListener("click", applyLastDestinationToCashForm);
@@ -232,6 +274,13 @@ async function handlePasteAddress() {
 async function handleSearchAddress() {
   const rawInput = elements.addressInput.value.trim();
 
+  if (state.activeTrip) {
+    const message = "Finaliza el viaje actual antes de buscar otro destino.";
+    setInlineStatus(elements.mapStatus, message, "warning");
+    showToast(message, "warning");
+    return;
+  }
+
   if (!rawInput) {
     const message = "Ingresa o pega una direccion para empezar.";
     setInlineStatus(elements.mapStatus, message, "warning");
@@ -241,6 +290,7 @@ async function handleSearchAddress() {
   }
 
   await withBusyState(async () => {
+    state.lastSearchInput = rawInput;
     state.routeError = "";
     state.addressAnalysis = {
       status: "interpreting",
@@ -250,6 +300,9 @@ async function handleSearchAddress() {
     };
     state.routes = [];
     state.activeRouteId = "";
+    state.recommendedRouteId = "";
+    state.destinationProfile = null;
+    state.destinationMemorySummary = null;
     renderOperationalPanel();
 
     setInlineStatus(
@@ -263,6 +316,7 @@ async function handleSearchAddress() {
     if (!result.ok) {
       state.destination = null;
       state.activeProvider = result.provider || "";
+      state.activeProviderNote = "";
       state.addressAnalysis = {
         ...(result.interpretation || {}),
         status: result.status || result.interpretation?.status || "doubtful",
@@ -312,6 +366,13 @@ async function handleSearchAddress() {
 }
 
 async function handleUseCurrentLocation() {
+  if (state.activeTrip) {
+    const message = "No cambio el origen mientras hay un viaje activo.";
+    setInlineStatus(elements.mapStatus, message, "warning");
+    showToast(message, "warning");
+    return;
+  }
+
   if (!navigator.geolocation) {
     const message = "Este navegador no ofrece geolocalizacion.";
     setInlineStatus(elements.mapStatus, message, "warning");
@@ -378,18 +439,25 @@ async function calculateRoutesForCurrentDestination(source) {
     return;
   }
 
-  setInlineStatus(elements.mapStatus, "Calculando rutas en bici y evaluando riesgo operativo...", "default");
+  setInlineStatus(
+    elements.mapStatus,
+    "Calculando rutas reales, comparando estrategias y evaluando riesgo operativo...",
+    "default"
+  );
 
   try {
-    const routeResponse = await getRoute({
+    const routeResponse = await getRouteOptions({
       origin: state.origin,
       destination: state.destination.coordinates,
-      strategy: state.selectedStrategy,
     });
 
-    const destinationFeature = buildPointFeature(state.destination.coordinates, { kind: "destination" });
+    const destinationFeature = buildPointFeature(state.destination.coordinates, {
+      kind: "destination",
+    });
     state.activeProvider = routeResponse.provider;
-    state.routes = routeResponse.routes.map((route) => {
+    state.activeProviderNote = routeResponse.providerNote || "";
+
+    const analyzedRoutes = routeResponse.routes.map((route) => {
       const routeFeature = {
         type: "Feature",
         geometry: route.geometry,
@@ -402,17 +470,21 @@ async function calculateRoutesForCurrentDestination(source) {
       return {
         ...route,
         operationalRisk,
-        strategyScore: scoreRouteForStrategy(route, operationalRisk, state.selectedStrategy),
-        summary: summarizeRoute({
+        baseSummary: summarizeRoute({
           route,
-          strategy: state.selectedStrategy,
+          strategy: route.strategy,
           operationalRisk,
         }),
       };
     });
 
-    const sortedRoutes = getSortedRoutes();
-    state.activeRouteId = sortedRoutes[0]?.id || "";
+    state.destinationProfile = buildDestinationMemoryProfile({
+      rawAddress: state.lastSearchInput,
+      destination: state.destination,
+      addressAnalysis: state.addressAnalysis,
+      operationalRisk: analyzedRoutes[0]?.operationalRisk || null,
+    });
+    applyRouteLearning(analyzedRoutes);
     state.routeError = "";
     syncMapLayers();
     renderOperationalPanel();
@@ -424,11 +496,27 @@ async function calculateRoutesForCurrentDestination(source) {
     console.error(error);
     state.routes = [];
     state.activeRouteId = "";
+    state.recommendedRouteId = "";
+    state.activeProviderNote = "";
     state.routeError = "No pude calcular una ruta usable en este momento.";
     syncMapLayers();
     renderOperationalPanel();
     setInlineStatus(elements.mapStatus, state.routeError, "danger");
     showToast("Fallo el calculo de ruta.", "danger");
+  }
+}
+
+function rerankCurrentRoutes(source = "strategy") {
+  if (!state.routes.length || !state.destinationProfile) {
+    return;
+  }
+
+  applyRouteLearning(state.routes);
+  syncMapLayers();
+  renderOperationalPanel();
+
+  if (source === "strategy") {
+    showToast(`Prioridad ${buildStrategyLabel(state.selectedStrategy).toLowerCase()} actualizada.`, "success");
   }
 }
 
@@ -455,16 +543,34 @@ async function handlePrimaryAction() {
     state.selectedStrategy = "cautious";
     writeJsonStorage(APP_CONFIG.storageKeys.lastStrategy, state.selectedStrategy);
     updateStrategyButtons();
-    await recalculateRouteForCurrentDestination("strategy");
+    if (state.routes.length) {
+      rerankCurrentRoutes("strategy");
+    } else {
+      await recalculateRouteForCurrentDestination("strategy");
+    }
     return;
   }
 
   if (uiState.primaryActionKind === "suggested") {
     selectSuggestedRoute();
+    return;
+  }
+
+  if (uiState.primaryActionKind === "start-trip") {
+    startActiveTrip();
+    return;
+  }
+
+  if (uiState.primaryActionKind === "finish-trip") {
+    finishActiveTrip();
   }
 }
 
 function handleShowAlternativeRoute() {
+  if (state.activeTrip) {
+    return;
+  }
+
   const sortedRoutes = getSortedRoutes();
 
   if (sortedRoutes.length < 2) {
@@ -484,7 +590,7 @@ function handleShowAlternativeRoute() {
 }
 
 function selectSuggestedRoute() {
-  const suggestedRoute = getSortedRoutes()[0];
+  const suggestedRoute = getSuggestedRoute();
 
   if (!suggestedRoute) {
     return;
@@ -532,6 +638,7 @@ function syncMapLayers() {
 function renderOperationalPanel() {
   const uiState = deriveUiState();
   const activeRoute = getActiveRoute();
+  const elapsedSeconds = state.activeTrip ? getElapsedTripSeconds(state.activeTrip) : 0;
 
   elements.appStatusPill.textContent = uiState.headerBadge;
   setBadgeTone(elements.appStatusPill, uiState.badgeTone);
@@ -548,17 +655,45 @@ function renderOperationalPanel() {
   elements.recommendationCopy.textContent = uiState.recommendationCopy;
   elements.routeDistance.textContent = activeRoute ? formatDistance(activeRoute.distanceMeters) : "Sin ruta";
   elements.routeDuration.textContent = activeRoute ? formatDuration(activeRoute.durationSeconds) : "Sin ruta";
+  elements.tripLiveDuration.textContent = state.activeTrip ? formatDuration(elapsedSeconds) : "Sin seguimiento";
+  elements.routeHistorySummary.textContent =
+    activeRoute?.historyLabel || state.destinationMemorySummary?.label || "Sin experiencia";
   elements.originSummary.textContent = buildOriginCopy();
-  elements.routeWhy.textContent = activeRoute?.summary || state.routeError || "Todavia no hay una ruta activa.";
-  elements.routeProviderNote.textContent = buildProviderLabel(state.activeProvider);
+  elements.routeReliability.textContent = activeRoute
+    ? `Confiabilidad ${formatReliabilityLabel(activeRoute.historyMetrics?.reliabilityScore || 0.5)}`
+    : "Confiabilidad inicial";
+  elements.routeHistoryDetail.textContent =
+    activeRoute?.historyDetail ||
+    state.destinationMemorySummary?.detail ||
+    "Sin experiencia previa suficiente para darle peso fuerte a la memoria.";
+  elements.routeWhy.textContent = activeRoute?.recommendation || activeRoute?.baseSummary || state.routeError || "Todavia no hay una ruta activa.";
+  elements.routeProviderNote.textContent = state.activeProviderNote || buildProviderLabel(state.activeProvider);
+  elements.tripStrip.hidden = !state.activeTrip;
+  elements.tripStatusTitle.textContent = state.activeTrip
+    ? `En viaje hacia ${compactDestinationLabel(state.destination?.label || state.lastSearchInput || "destino")}`
+    : "Sin viaje activo";
+  elements.tripStatusCopy.textContent = state.activeTrip
+    ? `${buildStrategyLabel(state.activeTrip.strategy).toLowerCase()} | aprendiendo en ${state.destinationProfile?.zoneLabel || "esta zona"}`
+    : "Cuando inicies una ruta, comparo estimado vs real y lo guardo para futuras recomendaciones.";
+  elements.tripEstimatedPill.textContent = state.activeTrip
+    ? `Estimado: ${formatDuration(state.activeTrip.estimatedDurationSeconds)}`
+    : "Estimado: sin dato";
+  elements.tripDeltaPill.textContent = state.activeTrip
+    ? `Actual: ${formatDuration(elapsedSeconds)}`
+    : "Delta: pendiente";
 
   elements.primaryActionButton.textContent = uiState.primaryActionLabel;
   elements.primaryActionButton.disabled = uiState.primaryActionDisabled;
-  elements.showAlternativeButton.disabled = getAlternativeRoutes(state.routes, state.activeRouteId).length === 0;
+  elements.showAlternativeButton.disabled =
+    state.activeTrip || getAlternativeRoutes(state.routes, state.activeRouteId).length === 0;
   elements.openExternalNavButton.disabled = !state.destination;
 
   elements.feedbackButtons.forEach((button) => {
     button.disabled = !activeRoute;
+  });
+
+  elements.strategyButtons.forEach((button) => {
+    button.disabled = Boolean(state.activeTrip);
   });
 
   renderReasonList(buildReasonItems());
@@ -569,6 +704,16 @@ function renderOperationalPanel() {
 function deriveUiState() {
   const activeRoute = getActiveRoute();
   const stage = getOperationalStage();
+  const suggestedRoute = getSuggestedRoute();
+  const suggestedLabel = buildStrategyLabel(
+    suggestedRoute?.displayStrategy || suggestedRoute?.strategy || state.selectedStrategy
+  );
+  const currentLabel = buildStrategyLabel(activeRoute?.displayStrategy || activeRoute?.strategy || state.selectedStrategy);
+  const suggestedTitle =
+    suggestedRoute?.alternativeTitle && suggestedRoute.alternativeTitle !== "Sugerida"
+      ? suggestedRoute.alternativeTitle
+      : suggestedLabel;
+  const hasSuggestedAlternative = Boolean(suggestedRoute && activeRoute && suggestedRoute.id !== activeRoute.id);
   const base = {
     headerBadge: "Esperando",
     addressBadge: "Esperando",
@@ -644,9 +789,26 @@ function deriveUiState() {
     };
   }
 
-  if (stage === "night") {
-    const canGoSafer = state.selectedStrategy !== "cautious";
+  if (stage === "tracking") {
+    return {
+      ...base,
+      headerBadge: "En viaje",
+      addressBadge: "Siguiendo",
+      badgeTone: "success",
+      resolutionStatus: "Seguimiento activo",
+      operationalRisk: activeRoute?.operationalRisk?.overallLabel || "Sin evaluar",
+      recommendedRoute: currentLabel,
+      recommendationTitle: "Viaje en curso",
+      recommendationCopy: `Estoy comparando ${formatDuration(
+        activeRoute?.durationSeconds || 0
+      )} estimados contra el tiempo real para aprender de este destino.`,
+      primaryActionLabel: "Finalizar viaje",
+      primaryActionKind: "finish-trip",
+      primaryActionDisabled: false,
+    };
+  }
 
+  if (stage === "night") {
     return {
       ...base,
       headerBadge: "Noche",
@@ -654,19 +816,19 @@ function deriveUiState() {
       badgeTone: "night",
       resolutionStatus: "No recomendado de noche",
       operationalRisk: activeRoute?.operationalRisk?.overallLabel || "No recomendado de noche",
-      recommendedRoute: `${buildStrategyLabel(state.selectedStrategy)} sugerida`,
-      recommendationTitle: canGoSafer ? "Conviene pasar a ruta prudente" : "No recomendado de noche",
+      recommendedRoute: suggestedRoute ? suggestedLabel : currentLabel,
+      recommendationTitle: hasSuggestedAlternative ? "Conviene pasar a la sugerida" : "Precaucion nocturna",
       recommendationCopy:
-        activeRoute?.operationalRisk?.recommendation || "Conviene evitar esta ruta de noche.",
-      primaryActionLabel: canGoSafer ? "Usar ruta prudente" : "No recomendado de noche",
-      primaryActionKind: canGoSafer ? "safer" : "suggested",
-      primaryActionDisabled: !canGoSafer,
+        suggestedRoute?.recommendation ||
+        activeRoute?.operationalRisk?.recommendation ||
+        "Conviene bajar exposicion o revisar horario.",
+      primaryActionLabel: hasSuggestedAlternative ? "Usar ruta sugerida" : "Seguir esta ruta",
+      primaryActionKind: hasSuggestedAlternative ? "suggested" : "start-trip",
+      primaryActionDisabled: false,
     };
   }
 
   if (stage === "attention") {
-    const canGoSafer = state.selectedStrategy !== "cautious";
-
     return {
       ...base,
       headerBadge: "Atencion",
@@ -674,12 +836,14 @@ function deriveUiState() {
       badgeTone: "warning",
       resolutionStatus: "Ruta con atencion",
       operationalRisk: activeRoute?.operationalRisk?.overallLabel || "Precaucion",
-      recommendedRoute: `${buildStrategyLabel(state.selectedStrategy)} sugerida`,
-      recommendationTitle: canGoSafer ? "Conviene bajar exposicion" : "Ruta lista con atencion",
+      recommendedRoute: suggestedRoute ? suggestedLabel : currentLabel,
+      recommendationTitle: hasSuggestedAlternative ? "Conviene usar la mejor balanceada" : "Ruta lista con atencion",
       recommendationCopy:
-        activeRoute?.operationalRisk?.recommendation || "La ruta toca un sector que requiere mas cuidado operativo.",
-      primaryActionLabel: canGoSafer ? "Usar ruta prudente" : "Ir por ruta sugerida",
-      primaryActionKind: canGoSafer ? "safer" : "suggested",
+        suggestedRoute?.recommendation ||
+        activeRoute?.operationalRisk?.recommendation ||
+        "La ruta toca un sector que requiere mas cuidado operativo.",
+      primaryActionLabel: hasSuggestedAlternative ? "Usar ruta sugerida" : "Seguir esta ruta",
+      primaryActionKind: hasSuggestedAlternative ? "suggested" : "start-trip",
       primaryActionDisabled: false,
     };
   }
@@ -692,11 +856,12 @@ function deriveUiState() {
       badgeTone: "success",
       resolutionStatus: "Ruta lista",
       operationalRisk: activeRoute?.operationalRisk?.overallLabel || "Normal",
-      recommendedRoute: `${buildStrategyLabel(state.selectedStrategy)} sugerida`,
-      recommendationTitle: `Ruta ${buildStrategyLabel(state.selectedStrategy).toLowerCase()} sugerida`,
-      recommendationCopy: activeRoute?.summary || "Ruta lista para salir.",
-      primaryActionLabel: "Ir por ruta sugerida",
-      primaryActionKind: "suggested",
+      recommendedRoute: suggestedRoute ? suggestedLabel : currentLabel,
+      recommendationTitle: hasSuggestedAlternative ? `Conviene ${suggestedTitle.toLowerCase()}` : `Ruta ${currentLabel.toLowerCase()} lista`,
+      recommendationCopy:
+        suggestedRoute?.recommendation || activeRoute?.recommendation || activeRoute?.baseSummary || "Ruta lista para salir.",
+      primaryActionLabel: hasSuggestedAlternative ? "Usar ruta sugerida" : "Seguir esta ruta",
+      primaryActionKind: hasSuggestedAlternative ? "suggested" : "start-trip",
       primaryActionDisabled: false,
     };
   }
@@ -718,6 +883,10 @@ function getOperationalStage() {
   }
 
   const activeRoute = getActiveRoute();
+
+  if (state.activeTrip && activeRoute) {
+    return "tracking";
+  }
 
   if (activeRoute?.operationalRisk?.overallLabel === "No recomendado de noche") {
     return "night";
@@ -768,23 +937,32 @@ function renderRouteList(routes) {
     }
 
     button.addEventListener("click", () => {
+      if (state.activeTrip) {
+        return;
+      }
+
       state.activeRouteId = route.id;
       syncMapLayers();
       renderOperationalPanel();
     });
 
     topLine.className = "route-card-top";
-    title.textContent = index === 0 ? "Sugerida" : `Alternativa ${index + 1}`;
+    title.textContent =
+      route.id === state.recommendedRouteId ? "Sugerida" : route.alternativeTitle || `Alternativa ${index + 1}`;
     subtitle.className = "history-meta";
     subtitle.textContent = `${formatDistance(route.distanceMeters)} | ${formatDuration(route.durationSeconds)}`;
     topLine.append(title, subtitle);
 
-    copy.textContent = route.summary;
+    copy.textContent = route.recommendation || route.baseSummary;
     tags.className = "route-card-tags";
     tags.append(
       createTinyPill(route.operationalRisk.overallLabel, getRiskTone(route.operationalRisk.overallLabel)),
-      createTinyPill(buildStrategyLabel(state.selectedStrategy), "accent")
+      createTinyPill(buildStrategyLabel(route.displayStrategy || route.strategy), "accent")
     );
+
+    if (route.historyMetrics?.sampleSize) {
+      tags.append(createTinyPill(route.historyLabel, getMemoryTone(route.historyMetrics?.performanceScore || 0)));
+    }
 
     button.append(topLine, copy, tags);
     elements.routeList.append(button);
@@ -810,6 +988,8 @@ function buildReasonItems() {
     ...(state.addressAnalysis?.notes || []),
     state.destination ? "Destino dentro de Neuquen Capital." : "",
     ...(activeRoute?.operationalRisk?.reasons || []),
+    state.destinationMemorySummary?.hasHistory ? state.destinationMemorySummary.label : "",
+    activeRoute?.historyMetrics?.nightStrength ? "Mejor rendimiento historico en este horario." : "",
   ];
 
   return [...new Set(reasons.filter(Boolean))];
@@ -852,7 +1032,7 @@ function renderFeedback() {
 
   if (!state.routeFeedback.length) {
     elements.feedbackList.append(
-      createEmptyState("Cuando marques una ruta como buena o incomoda, el registro aparece aqui.")
+      createEmptyState("Cuando marques una ruta como buena, incomoda o sensible, el registro aparece aqui.")
     );
     return;
   }
@@ -874,6 +1054,37 @@ function renderFeedback() {
     topLine.append(label, meta);
     item.append(topLine, copy);
     elements.feedbackList.append(item);
+  });
+}
+
+function renderTripMemories() {
+  elements.tripMemoryList.replaceChildren();
+  elements.tripMemoryCount.textContent = `${state.tripMemories.length} viaje${state.tripMemories.length === 1 ? "" : "s"}`;
+
+  if (!state.tripMemories.length) {
+    elements.tripMemoryList.append(
+      createEmptyState("Cuando cierres viajes con seguimiento, la memoria operativa aparecera aqui.")
+    );
+    return;
+  }
+
+  state.tripMemories.slice(0, APP_CONFIG.recentTripMemoryLimit).forEach((entry) => {
+    const item = document.createElement("article");
+    const topLine = document.createElement("div");
+    const label = document.createElement("strong");
+    const meta = document.createElement("span");
+    const copy = document.createElement("p");
+
+    item.className = "feedback-item";
+    topLine.className = "feedback-topline";
+    label.textContent = compactDestinationLabel(entry.normalizedAddress);
+    meta.className = "feedback-meta";
+    meta.textContent = formatDateTime(entry.completedAt);
+    copy.textContent = `${buildTripMemoryPreview(entry)} | ${formatDuration(entry.actualDurationSeconds)} real vs ${formatDuration(entry.estimatedDurationSeconds)} estimado`;
+
+    topLine.append(label, meta);
+    item.append(topLine, copy);
+    elements.tripMemoryList.append(item);
   });
 }
 
@@ -899,8 +1110,8 @@ function saveRouteFeedback(type) {
     type,
     createdAt: new Date().toISOString(),
     destinationLabel: compactDestinationLabel(state.destination.label),
-    strategy: state.selectedStrategy,
-    strategyLabel: buildStrategyLabel(state.selectedStrategy),
+    strategy: activeRoute.displayStrategy || activeRoute.strategy || state.selectedStrategy,
+    strategyLabel: buildStrategyLabel(activeRoute.displayStrategy || activeRoute.strategy || state.selectedStrategy),
     routeRisk: activeRoute.operationalRisk?.overallLabel,
   };
 
@@ -908,6 +1119,168 @@ function saveRouteFeedback(type) {
   writeJsonStorage(APP_CONFIG.storageKeys.routeFeedback, state.routeFeedback);
   renderFeedback();
   showToast("Feedback guardado.", "success");
+}
+
+function applyRouteLearning(routes) {
+  const previousActiveRouteId = state.activeTrip ? state.activeRouteId : "";
+  const intelligence = rankRoutesWithMemory({
+    routes,
+    destinationProfile: state.destinationProfile,
+    preferredStrategy: state.selectedStrategy,
+    hourContext: getHourContext(),
+  });
+
+  state.routes = intelligence.routes;
+  state.destinationProfile = intelligence.destinationProfile;
+  state.destinationMemorySummary = intelligence.destinationSummary;
+  state.recommendedRouteId = intelligence.recommendedRouteId;
+
+  const stillHasPreviousRoute = previousActiveRouteId && intelligence.routes.some((route) => route.id === previousActiveRouteId);
+  state.activeRouteId = stillHasPreviousRoute ? previousActiveRouteId : intelligence.recommendedRouteId || intelligence.routes[0]?.id || "";
+}
+
+function startActiveTrip() {
+  const activeRoute = getActiveRoute();
+
+  if (!activeRoute || !state.destination || state.activeTrip) {
+    return;
+  }
+
+  state.activeTrip = startTripTimer({
+    estimatedDurationSeconds: activeRoute.durationSeconds,
+    provider: state.activeProvider,
+    strategy: activeRoute.displayStrategy || activeRoute.strategy || state.selectedStrategy,
+    routeId: activeRoute.id,
+    routeFingerprint: activeRoute.routeFingerprint,
+    routeSummary: activeRoute.recommendation || activeRoute.baseSummary,
+    distanceMeters: activeRoute.distanceMeters,
+    destinationProfile: state.destinationProfile,
+    originalAddress: state.lastSearchInput,
+    hourContext: getHourContext(),
+    destinationRiskLabel: activeRoute.operationalRisk?.destinationRisk,
+    routeRiskLabel: activeRoute.operationalRisk?.routeRisk,
+    operationalRiskLabel: activeRoute.operationalRisk?.overallLabel,
+    riskScore: activeRoute.operationalRisk?.score || 0,
+    route: activeRoute,
+    alternatives: getSortedRoutes()
+      .filter((route) => route.id !== activeRoute.id)
+      .slice(0, 4)
+      .map((route) => ({
+        id: route.id,
+        label: route.alternativeTitle || buildStrategyLabel(route.displayStrategy || route.strategy),
+        strategy: route.displayStrategy || route.strategy,
+        durationSeconds: route.durationSeconds,
+        distanceMeters: route.distanceMeters,
+        riskLabel: route.operationalRisk?.overallLabel,
+      })),
+  });
+  state.activeTrip.delta = calculateTripDelta(state.activeTrip.estimatedDurationSeconds, 0);
+  startTripTicker();
+  renderOperationalPanel();
+  showToast("Seguimiento iniciado. Voy a comparar estimado vs real.", "success");
+}
+
+function finishActiveTrip() {
+  if (!state.activeTrip) {
+    return;
+  }
+
+  state.pendingTripReview = stopTripTimer(state.activeTrip);
+  state.activeTrip = null;
+  stopTripTicker();
+  renderOperationalPanel();
+  openPostTripDialog();
+}
+
+function startTripTicker() {
+  stopTripTicker();
+
+  state.tripTickerId = window.setInterval(() => {
+    if (!state.activeTrip) {
+      stopTripTicker();
+      return;
+    }
+
+    const elapsedSeconds = getElapsedTripSeconds(state.activeTrip);
+    state.activeTrip.delta = calculateTripDelta(state.activeTrip.estimatedDurationSeconds, elapsedSeconds);
+    renderOperationalPanel();
+  }, 1000);
+}
+
+function stopTripTicker() {
+  if (state.tripTickerId) {
+    window.clearInterval(state.tripTickerId);
+    state.tripTickerId = 0;
+  }
+}
+
+function openPostTripDialog() {
+  if (!state.pendingTripReview) {
+    return;
+  }
+
+  elements.postTripForm.reset();
+  elements.postTripSummary.textContent = `Estimado ${formatDuration(
+    state.pendingTripReview.estimatedDurationSeconds
+  )} | real ${formatDuration(state.pendingTripReview.actualDurationSeconds)} | ${formatTripDelta(
+    state.pendingTripReview.delta
+  )}`;
+
+  if (elements.postTripDialog.showModal) {
+    elements.postTripDialog.showModal();
+  } else {
+    elements.postTripDialog.setAttribute("open", "open");
+  }
+}
+
+function closePostTripDialog() {
+  state.pendingTripReview = null;
+  elements.postTripForm.reset();
+
+  if (elements.postTripDialog.close) {
+    elements.postTripDialog.close();
+  } else {
+    elements.postTripDialog.removeAttribute("open");
+  }
+}
+
+function handlePostTripSubmit(event) {
+  event.preventDefault();
+
+  if (!state.pendingTripReview) {
+    closePostTripDialog();
+    return;
+  }
+
+  const formData = new FormData(elements.postTripForm);
+  const feedback = formData.getAll("tripFeedback").map((value) => String(value));
+  const hadDetour = Boolean(formData.get("hadDetour"));
+  const observation = String(formData.get("observation") || "").trim();
+  const memoryEntry = buildTripMemoryEntry({
+    activeTrip: state.pendingTripReview,
+    feedback,
+    observation,
+    hadDetour,
+    completedTrip: state.pendingTripReview,
+  });
+
+  const savedEntry = saveTripMemory(memoryEntry);
+
+  if (!savedEntry) {
+    showToast("No pude guardar el aprendizaje de este viaje.", "danger");
+    return;
+  }
+
+  state.tripMemories = getTripMemories();
+  closePostTripDialog();
+
+  if (state.routes.length && state.destinationProfile) {
+    rerankCurrentRoutes("memory");
+  } else {
+    renderTripMemories();
+  }
+
+  showToast("Viaje guardado en memoria operativa.", "success");
 }
 
 function pushDestinationHistory(destination) {
@@ -1290,8 +1663,12 @@ function getActiveRoute() {
   return state.routes.find((route) => route.id === state.activeRouteId) || null;
 }
 
+function getSuggestedRoute() {
+  return state.routes.find((route) => route.id === state.recommendedRouteId) || getSortedRoutes()[0] || null;
+}
+
 function getSortedRoutes() {
-  return [...state.routes].sort((left, right) => left.strategyScore - right.strategyScore);
+  return [...state.routes].sort((left, right) => (right.riderScore || 0) - (left.riderScore || 0));
 }
 
 function buildPointFeature(point, extraProperties = {}) {
@@ -1321,8 +1698,8 @@ function buildProviderLabel(provider) {
 
 function buildOriginCopy() {
   return state.origin.isApproximate
-    ? "Centro de Neuquen (referencia)"
-    : compactDestinationLabel(state.origin.label || "Mi ubicacion actual");
+    ? "Origen: centro de Neuquen (referencia)"
+    : `Origen: ${compactDestinationLabel(state.origin.label || "Mi ubicacion actual")}`;
 }
 
 function buildStrategyLabel(strategy) {
@@ -1346,7 +1723,39 @@ function buildFeedbackLabel(type) {
     return "Ruta incomoda";
   }
 
+  if (type === "time_loss") {
+    return "Me hizo perder tiempo";
+  }
+
+  if (type === "reuse") {
+    return "La volveria a usar";
+  }
+
   return "Zona complicada";
+}
+
+function formatReliabilityLabel(score) {
+  if (score >= 0.76) {
+    return "alta";
+  }
+
+  if (score >= 0.58) {
+    return "media";
+  }
+
+  return "inicial";
+}
+
+function getMemoryTone(score) {
+  if (score > 0.24) {
+    return "normal";
+  }
+
+  if (score < -0.18) {
+    return "danger";
+  }
+
+  return "warning";
 }
 
 function parsePositiveNumber(value) {
