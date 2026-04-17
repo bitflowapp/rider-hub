@@ -17,9 +17,17 @@ export async function createMapService({ containerId, riskZones }) {
     throw new Error("MapLibre GL JS no esta cargado.");
   }
 
+  const container = resolveContainer(containerId);
+
+  if (!container) {
+    throw new Error("No encontre el contenedor del mapa.");
+  }
+
+  await waitForContainerSize(container);
+
   const runtimeConfig = getRuntimeConfig();
   const map = new globalThis.maplibregl.Map({
-    container: containerId,
+    container,
     style: runtimeConfig.mapStyleUrl,
     center: [APP_CONFIG.center.lng, APP_CONFIG.center.lat],
     zoom: APP_CONFIG.defaultZoom,
@@ -30,6 +38,7 @@ export async function createMapService({ containerId, riskZones }) {
     dragRotate: false,
     pitchWithRotate: false,
   });
+  const scheduleResize = createResizeScheduler(map);
 
   map.touchZoomRotate.disableRotation();
   map.addControl(new globalThis.maplibregl.NavigationControl({ showCompass: false, visualizePitch: false }), "top-right");
@@ -37,9 +46,14 @@ export async function createMapService({ containerId, riskZones }) {
 
   await onceMapLoaded(map);
   installBaseSources(map, riskZones);
+  installContainerResizeObserver(container, scheduleResize);
+  scheduleResize();
 
   return {
     map,
+    resize(delay = 0) {
+      scheduleResize(delay);
+    },
     setOrigin(pointFeature) {
       updateSource(map, "origin-point", featureCollection(pointFeature ? [pointFeature] : []));
     },
@@ -57,6 +71,7 @@ export async function createMapService({ containerId, riskZones }) {
         geometry: route.geometry,
       }));
 
+      resizeMap(map);
       updateSource(map, "routes", featureCollection(features));
       fitMapToContext(map, {
         routes: features,
@@ -65,9 +80,11 @@ export async function createMapService({ containerId, riskZones }) {
       });
     },
     fitToContext(context) {
+      resizeMap(map);
       fitMapToContext(map, context);
     },
     flyTo(lng, lat, zoom = APP_CONFIG.focusZoom) {
+      resizeMap(map);
       map.flyTo({
         center: [lng, lat],
         zoom,
@@ -247,12 +264,7 @@ function fitMapToContext(map, context) {
 
   if (!bounds.isEmpty()) {
     map.fitBounds(bounds, {
-      padding: {
-        top: 132,
-        right: 32,
-        bottom: 164,
-        left: 32,
-      },
+      padding: getMapPadding(),
       duration: 720,
       maxZoom: 15.6,
     });
@@ -275,4 +287,157 @@ function onceMapLoaded(map) {
     map.once("load", resolve);
     map.once("error", (event) => reject(event.error || new Error("No pude inicializar el mapa.")));
   });
+}
+
+function resolveContainer(containerId) {
+  if (typeof containerId === "string") {
+    return globalThis.document?.getElementById(containerId);
+  }
+
+  return containerId || null;
+}
+
+function waitForContainerSize(container, timeoutMs = 2600) {
+  if (hasContainerSize(container)) {
+    return Promise.resolve();
+  }
+
+  return new Promise((resolve, reject) => {
+    let resizeObserver = null;
+    let animationFrameId = 0;
+    let timeoutId = 0;
+    let settled = false;
+
+    const cleanup = () => {
+      if (resizeObserver) {
+        resizeObserver.disconnect();
+      }
+
+      if (animationFrameId) {
+        globalThis.cancelAnimationFrame(animationFrameId);
+      }
+
+      if (timeoutId) {
+        globalThis.clearTimeout(timeoutId);
+      }
+    };
+
+    const finish = () => {
+      if (settled || !hasContainerSize(container)) {
+        return;
+      }
+
+      settled = true;
+      cleanup();
+      resolve();
+    };
+
+    const inspect = () => {
+      if (settled) {
+        return;
+      }
+
+      if (hasContainerSize(container)) {
+        finish();
+        return;
+      }
+
+      animationFrameId = globalThis.requestAnimationFrame(inspect);
+    };
+
+    if ("ResizeObserver" in globalThis) {
+      resizeObserver = new globalThis.ResizeObserver(finish);
+      resizeObserver.observe(container);
+    }
+
+    animationFrameId = globalThis.requestAnimationFrame(inspect);
+    timeoutId = globalThis.setTimeout(() => {
+      if (hasContainerSize(container)) {
+        finish();
+        return;
+      }
+
+      cleanup();
+      reject(new Error("El contenedor del mapa no obtuvo una altura util a tiempo."));
+    }, timeoutMs);
+  });
+}
+
+function hasContainerSize(container) {
+  const rect = container?.getBoundingClientRect?.();
+  return Boolean(rect && rect.width > 0 && rect.height > 0);
+}
+
+function createResizeScheduler(map) {
+  let timeoutId = 0;
+  let animationFrameId = 0;
+
+  return (delay = 0) => {
+    if (timeoutId) {
+      globalThis.clearTimeout(timeoutId);
+      timeoutId = 0;
+    }
+
+    if (animationFrameId) {
+      globalThis.cancelAnimationFrame(animationFrameId);
+      animationFrameId = 0;
+    }
+
+    const run = () => {
+      animationFrameId = globalThis.requestAnimationFrame(() => {
+        animationFrameId = 0;
+        resizeMap(map);
+      });
+    };
+
+    if (delay > 0) {
+      timeoutId = globalThis.setTimeout(() => {
+        timeoutId = 0;
+        run();
+      }, delay);
+      return;
+    }
+
+    run();
+  };
+}
+
+function installContainerResizeObserver(container, scheduleResize) {
+  if (!("ResizeObserver" in globalThis)) {
+    return;
+  }
+
+  const resizeObserver = new globalThis.ResizeObserver(() => {
+    scheduleResize();
+  });
+
+  resizeObserver.observe(container);
+}
+
+function resizeMap(map) {
+  try {
+    map.resize();
+  } catch (error) {
+    console.warn("No pude redimensionar el mapa en este instante.", error);
+  }
+}
+
+function getMapPadding() {
+  const isCompactViewport = globalThis.matchMedia?.("(max-width: 739px)").matches ?? false;
+
+  if (isCompactViewport) {
+    return {
+      top: 52,
+      right: 18,
+      bottom: 52,
+      left: 18,
+    };
+  }
+
+  return {
+    top: 76,
+    right: 28,
+    bottom: 76,
+    left: 28,
+  };
 }

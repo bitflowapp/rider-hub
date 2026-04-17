@@ -56,6 +56,7 @@ const elements = {
   appStatusPill: document.querySelector("#app-status-pill"),
   strategyButtons: Array.from(document.querySelectorAll(".strategy-button")),
   feedbackButtons: Array.from(document.querySelectorAll(".feedback-button")),
+  layoutDrawers: Array.from(document.querySelectorAll(".insight-drawer, .secondary-drawer")),
   addressInput: document.querySelector("#address-input"),
   pasteAddressButton: document.querySelector("#paste-address-button"),
   searchAddressButton: document.querySelector("#search-address-button"),
@@ -103,6 +104,9 @@ const elements = {
   toastStack: document.querySelector("#toast-stack"),
 };
 
+let mapResizeFrameId = 0;
+let mapResizeTimeoutId = 0;
+
 init();
 
 async function init() {
@@ -125,6 +129,7 @@ async function init() {
     });
 
     syncMapLayers();
+    scheduleMapResizeBurst();
     setInlineStatus(elements.mapStatus, "Mapa listo. Busca un destino dentro de Neuquen Capital.", "success");
   } catch (error) {
     console.error(error);
@@ -184,6 +189,16 @@ function bindEvents() {
   elements.useLastAddressButton.addEventListener("click", applyLastDestinationToCashForm);
   elements.exportPdfButton.addEventListener("click", handleExportPdf);
   elements.exportExcelButton.addEventListener("click", handleExportExcel);
+
+  elements.layoutDrawers.forEach((drawer) => {
+    drawer.addEventListener("toggle", () => {
+      scheduleMapResizeBurst();
+    });
+  });
+
+  window.addEventListener("resize", handleViewportResize, { passive: true });
+  window.addEventListener("orientationchange", handleViewportResize, { passive: true });
+  window.visualViewport?.addEventListener("resize", handleViewportResize, { passive: true });
 }
 
 async function handlePasteAddress() {
@@ -511,6 +526,7 @@ function syncMapLayers() {
     origin: state.origin,
     destination: state.destination,
   });
+  queueMapResize();
 }
 
 function renderOperationalPanel() {
@@ -547,6 +563,7 @@ function renderOperationalPanel() {
 
   renderReasonList(buildReasonItems());
   renderRouteList(getSortedRoutes());
+  queueMapResize(40);
 }
 
 function deriveUiState() {
@@ -1339,11 +1356,60 @@ function parsePositiveNumber(value) {
   return Number.isFinite(parsed) && parsed > 0 ? parsed : null;
 }
 
+function handleViewportResize() {
+  scheduleMapResizeBurst();
+}
+
+function scheduleMapResizeBurst() {
+  queueMapResize();
+  window.setTimeout(() => {
+    queueMapResize();
+  }, 180);
+}
+
+function queueMapResize(delay = 0) {
+  if (!state.mapService?.resize) {
+    return;
+  }
+
+  if (mapResizeFrameId) {
+    window.cancelAnimationFrame(mapResizeFrameId);
+    mapResizeFrameId = 0;
+  }
+
+  if (mapResizeTimeoutId) {
+    window.clearTimeout(mapResizeTimeoutId);
+    mapResizeTimeoutId = 0;
+  }
+
+  const runResize = () => {
+    mapResizeFrameId = window.requestAnimationFrame(() => {
+      mapResizeFrameId = 0;
+      state.mapService?.resize?.();
+    });
+  };
+
+  if (delay > 0) {
+    mapResizeTimeoutId = window.setTimeout(() => {
+      mapResizeTimeoutId = 0;
+      runResize();
+    }, delay);
+    return;
+  }
+
+  runResize();
+}
+
 function scrollToSection(node) {
+  if (node instanceof HTMLDetailsElement && !node.open) {
+    node.open = true;
+  }
+
   node?.scrollIntoView({
     behavior: "smooth",
     block: "start",
   });
+  scheduleMapResizeBurst();
 }
 
 async function withBusyState(task) {

@@ -44,109 +44,127 @@
       </header>
 
       <main class="main-layout">
-        <section class="map-experience">
-          <div id="map" class="map-canvas" aria-label="Mapa de Neuquen Capital"></div>
-          <div class="map-veil" aria-hidden="true"></div>
+        <section class="primary-layout">
+          <article class="command-dock">
+            <div class="dock-head">
+              <div>
+                <p class="section-kicker">Destino</p>
+                <h2>Direccion y estrategia</h2>
+              </div>
+              <div class="utility-row">
+                <button class="mini-button" id="paste-address-button" type="button">Pegar</button>
+                <button class="mini-button" id="use-location-button" type="button">Ubicarme</button>
+              </div>
+            </div>
 
-          <div class="experience-overlay">
-            <section class="top-overlay">
-              <article class="command-dock">
-                <div class="dock-head">
-                  <div>
-                    <p class="section-kicker">Destino</p>
-                    <h2>Pega una direccion y deja que la app piense por vos</h2>
-                  </div>
-                  <div class="utility-row">
-                    <button class="mini-button" id="paste-address-button" type="button">Pegar</button>
-                    <button class="mini-button" id="use-location-button" type="button">Mi ubicacion</button>
-                  </div>
+            <div class="address-row">
+              <label class="sr-only" for="address-input">Direccion del cliente</label>
+              <textarea
+                id="address-input"
+                class="address-input"
+                rows="1"
+                placeholder="Ej.: Mendoza 850"
+                autocomplete="street-address"
+                spellcheck="false"
+              ></textarea>
+              <button class="button button-primary" id="search-address-button" type="button">
+                Buscar
+              </button>
+            </div>
+
+            <div class="strategy-switch" role="tablist" aria-label="Estrategia de ruta">
+              <button class="strategy-button" type="button" data-strategy="fast">Rapida</button>
+              <button class="strategy-button" type="button" data-strategy="balanced">Equilibrada</button>
+              <button class="strategy-button" type="button" data-strategy="cautious">Prudente</button>
+            </div>
+
+            <p class="inline-status" id="map-status" role="status" aria-live="polite">
+              Esperando una direccion para interpretar y rutear.
+            </p>
+          </article>
+
+          <section class="map-stage" aria-label="Mapa principal">
+            <div class="map-experience">
+              <div id="map" class="map-canvas" aria-label="Mapa de Neuquen Capital"></div>
+              <div class="map-veil" aria-hidden="true"></div>
+              <div class="map-glance" aria-hidden="true">
+                <span class="status-pill is-neutral">Mapa rider</span>
+                <p class="map-glance-copy">Neuquen Capital, bici y foco operativo.</p>
+              </div>
+            </div>
+          </section>
+
+          <section class="decision-panel">
+            <article class="state-card">
+              <div class="state-topline">
+                <div>
+                  <p class="mini-label">Direccion interpretada</p>
+                  <strong id="interpreted-address">Esperando direccion</strong>
                 </div>
+                <span class="status-pill is-neutral" id="address-state-badge">Esperando</span>
+              </div>
 
-                <div class="address-row">
-                  <label class="sr-only" for="address-input">Direccion del cliente</label>
-                  <textarea
-                    id="address-input"
-                    class="address-input"
-                    rows="2"
-                    placeholder="Ej.: Mendoza 850"
-                    autocomplete="street-address"
-                    spellcheck="false"
-                  ></textarea>
-                  <button class="button button-primary" id="search-address-button" type="button">
-                    Buscar
-                  </button>
-                </div>
+              <div class="state-grid">
+                <article class="state-metric">
+                  <span>Estado</span>
+                  <strong id="resolution-status">Esperando direccion</strong>
+                </article>
+                <article class="state-metric">
+                  <span>Riesgo</span>
+                  <strong id="operational-risk">Sin evaluar</strong>
+                </article>
+                <article class="state-metric">
+                  <span>Sugerida</span>
+                  <strong id="recommended-route">Sin ruta</strong>
+                </article>
+              </div>
 
-                <div class="strategy-switch" role="tablist" aria-label="Estrategia de ruta">
-                  <button class="strategy-button" type="button" data-strategy="fast">Rapida</button>
-                  <button class="strategy-button" type="button" data-strategy="balanced">Equilibrada</button>
-                  <button class="strategy-button" type="button" data-strategy="cautious">Prudente</button>
-                </div>
-
-                <p class="inline-status" id="map-status" role="status" aria-live="polite">
-                  Esperando una direccion para interpretar y rutear.
+              <div class="decision-block">
+                <p class="mini-label">Recomendacion</p>
+                <h3 id="recommendation-title">Pega una direccion para empezar</h3>
+                <p id="recommendation-copy">
+                  Voy a limpiarla, validar Neuquen Capital y sugerirte la mejor ruta para salir rapido.
                 </p>
-              </article>
+              </div>
 
-              <article class="state-card">
-                <div class="state-topline">
+              <div class="route-overview">
+                <article class="overview-metric">
+                  <span>Distancia</span>
+                  <strong id="route-distance">Sin ruta</strong>
+                </article>
+                <article class="overview-metric">
+                  <span>Tiempo</span>
+                  <strong id="route-duration">Sin ruta</strong>
+                </article>
+                <article class="overview-metric">
+                  <span>Origen</span>
+                  <strong id="origin-summary">Referencia</strong>
+                </article>
+              </div>
+
+              <div class="route-context">
+                <p class="route-why" id="route-why">
+                  Todavia no hay una ruta activa.
+                </p>
+              </div>
+
+              <div class="reason-list" id="reason-list" aria-live="polite"></div>
+
+              <details class="insight-drawer" id="route-insights">
+                <summary>
                   <div>
-                    <p class="mini-label">Direccion interpretada</p>
-                    <strong id="interpreted-address">Esperando direccion</strong>
+                    <p class="mini-label">Detalle secundario</p>
+                    <strong>Variantes, provider y mas contexto</strong>
                   </div>
-                  <span class="status-pill is-neutral" id="address-state-badge">Esperando</span>
-                </div>
+                  <span class="drawer-action">Ver</span>
+                </summary>
 
-                <div class="state-grid">
-                  <article class="state-metric">
-                    <span>Estado</span>
-                    <strong id="resolution-status">Esperando direccion</strong>
-                  </article>
-                  <article class="state-metric">
-                    <span>Riesgo operativo</span>
-                    <strong id="operational-risk">Sin evaluar</strong>
-                  </article>
-                  <article class="state-metric">
-                    <span>Ruta sugerida</span>
-                    <strong id="recommended-route">Todavia no calculada</strong>
-                  </article>
-                </div>
-
-                <div class="decision-block">
-                  <p class="mini-label">Recomendacion</p>
-                  <h3 id="recommendation-title">Pega una direccion para empezar</h3>
-                  <p id="recommendation-copy">
-                    Voy a limpiarla, validar Neuquen Capital y sugerirte la mejor ruta para salir rapido.
-                  </p>
-                </div>
-
-                <div class="reason-list" id="reason-list" aria-live="polite"></div>
-
-                <div class="route-overview">
-                  <article class="overview-metric">
-                    <span>Distancia</span>
-                    <strong id="route-distance">Sin ruta</strong>
-                  </article>
-                  <article class="overview-metric">
-                    <span>Tiempo</span>
-                    <strong id="route-duration">Sin ruta</strong>
-                  </article>
-                  <article class="overview-metric">
-                    <span>Ahora</span>
-                    <strong id="origin-summary">Origen de referencia</strong>
-                  </article>
-                </div>
-
-                <div class="route-context">
-                  <p class="route-why" id="route-why">
-                    Todavia no hay una ruta activa.
-                  </p>
+                <div class="insight-panel">
                   <p class="provider-note" id="route-provider-note">Provider: esperando</p>
+                  <div class="route-list" id="route-list" aria-live="polite"></div>
                 </div>
-
-                <div class="route-list" id="route-list" aria-live="polite"></div>
-              </article>
-            </section>
+              </details>
+            </article>
 
             <div class="bottom-action-bar">
               <button class="button button-primary" id="primary-action-button" type="button">
@@ -159,145 +177,149 @@
                 Abrir navegacion externa
               </button>
             </div>
-          </div>
+          </section>
         </section>
 
         <section class="secondary-layout">
-          <article class="secondary-card" id="history-anchor">
-            <div class="section-head">
+          <details class="secondary-drawer" id="history-anchor">
+            <summary class="secondary-toggle">
               <div>
                 <p class="section-kicker">Memoria util</p>
                 <h2>Historial y feedback</h2>
               </div>
-              <span class="muted-copy">Persistencia local</span>
-            </div>
+              <span class="muted-copy">Abrir</span>
+            </summary>
 
-            <div class="secondary-grid">
-              <section class="subpanel">
-                <div class="subpanel-head">
-                  <p class="mini-label">Destinos recientes</p>
-                </div>
-                <div class="history-list" id="history-list" aria-live="polite"></div>
-              </section>
-
-              <section class="subpanel">
-                <div class="subpanel-head feedback-head">
-                  <p class="mini-label">Feedback rapido</p>
-                  <div class="feedback-strip" aria-label="Feedback rapido de ruta">
-                    <button class="feedback-button" type="button" data-feedback="good">Ruta buena</button>
-                    <button class="feedback-button" type="button" data-feedback="awkward">Ruta incomoda</button>
-                    <button class="feedback-button" type="button" data-feedback="zone">Zona complicada</button>
+            <article class="secondary-card">
+              <div class="secondary-grid">
+                <section class="subpanel">
+                  <div class="subpanel-head">
+                    <p class="mini-label">Destinos recientes</p>
                   </div>
-                </div>
-                <div class="feedback-list" id="feedback-list" aria-live="polite"></div>
-              </section>
-            </div>
-          </article>
+                  <div class="history-list" id="history-list" aria-live="polite"></div>
+                </section>
 
-          <article class="secondary-card" id="cash-anchor">
-            <div class="section-head">
+                <section class="subpanel">
+                  <div class="subpanel-head feedback-head">
+                    <p class="mini-label">Feedback rapido</p>
+                    <div class="feedback-strip" aria-label="Feedback rapido de ruta">
+                      <button class="feedback-button" type="button" data-feedback="good">Ruta buena</button>
+                      <button class="feedback-button" type="button" data-feedback="awkward">Ruta incomoda</button>
+                      <button class="feedback-button" type="button" data-feedback="zone">Zona complicada</button>
+                    </div>
+                  </div>
+                  <div class="feedback-list" id="feedback-list" aria-live="polite"></div>
+                </section>
+              </div>
+            </article>
+          </details>
+
+          <details class="secondary-drawer" id="cash-anchor">
+            <summary class="secondary-toggle">
               <div>
                 <p class="section-kicker">Caja secundaria</p>
-                <h2>Efectivo sin competir con el mapa</h2>
+                <h2>Efectivo y exportes</h2>
               </div>
               <span class="muted-copy" id="cash-summary-range">Semana actual</span>
-            </div>
+            </summary>
 
-            <div class="cash-layout">
-              <section class="subpanel">
-                <form id="cash-form" novalidate>
-                  <div class="field-grid">
-                    <label class="field">
-                      <span>Monto en efectivo</span>
-                      <input
-                        id="cash-amount"
-                        name="amount"
-                        class="input"
-                        type="number"
-                        inputmode="decimal"
-                        min="0.01"
-                        step="0.01"
-                        placeholder="0"
-                        required
-                      >
-                    </label>
+            <article class="secondary-card">
+              <div class="cash-layout">
+                <section class="subpanel">
+                  <form id="cash-form" novalidate>
+                    <div class="field-grid">
+                      <label class="field">
+                        <span>Monto en efectivo</span>
+                        <input
+                          id="cash-amount"
+                          name="amount"
+                          class="input"
+                          type="number"
+                          inputmode="decimal"
+                          min="0.01"
+                          step="0.01"
+                          placeholder="0"
+                          required
+                        >
+                      </label>
 
-                    <label class="field">
-                      <span>Fecha y hora</span>
-                      <input
-                        id="cash-datetime"
-                        name="createdAt"
-                        class="input"
-                        type="datetime-local"
-                        required
-                      >
-                    </label>
-                  </div>
-
-                  <label class="field">
-                    <span>Direccion asociada</span>
-                    <div class="field-inline">
-                      <input
-                        id="cash-address"
-                        name="address"
-                        class="input"
-                        type="text"
-                        list="address-suggestions"
-                        placeholder="Opcional"
-                        autocomplete="off"
-                      >
-                      <button class="mini-button" id="use-last-address-button" type="button">Usar ultima</button>
+                      <label class="field">
+                        <span>Fecha y hora</span>
+                        <input
+                          id="cash-datetime"
+                          name="createdAt"
+                          class="input"
+                          type="datetime-local"
+                          required
+                        >
+                      </label>
                     </div>
-                    <datalist id="address-suggestions"></datalist>
-                  </label>
 
-                  <label class="field">
-                    <span>Observacion</span>
-                    <textarea
-                      id="cash-notes"
-                      name="notes"
-                      class="input input-area"
-                      rows="3"
-                      maxlength="220"
-                      placeholder="Opcional"
-                    ></textarea>
-                  </label>
+                    <label class="field">
+                      <span>Direccion asociada</span>
+                      <div class="field-inline">
+                        <input
+                          id="cash-address"
+                          name="address"
+                          class="input"
+                          type="text"
+                          list="address-suggestions"
+                          placeholder="Opcional"
+                          autocomplete="off"
+                        >
+                        <button class="mini-button" id="use-last-address-button" type="button">Usar ultima</button>
+                      </div>
+                      <datalist id="address-suggestions"></datalist>
+                    </label>
 
-                  <div class="cash-actions">
-                    <button class="button button-secondary" type="submit">Guardar efectivo</button>
-                    <button class="button button-ghost" id="export-pdf-button" type="button">Exportar PDF</button>
-                    <button class="button button-ghost" id="export-excel-button" type="button">Exportar Excel</button>
+                    <label class="field">
+                      <span>Observacion</span>
+                      <textarea
+                        id="cash-notes"
+                        name="notes"
+                        class="input input-area"
+                        rows="3"
+                        maxlength="220"
+                        placeholder="Opcional"
+                      ></textarea>
+                    </label>
+
+                    <div class="cash-actions">
+                      <button class="button button-secondary" type="submit">Guardar efectivo</button>
+                      <button class="button button-ghost" id="export-pdf-button" type="button">Exportar PDF</button>
+                      <button class="button button-ghost" id="export-excel-button" type="button">Exportar Excel</button>
+                    </div>
+
+                    <p class="inline-status" id="cash-status" role="status" aria-live="polite">
+                      Registra efectivo sin salir del flujo principal.
+                    </p>
+                    <p class="provider-note" id="export-status" role="status" aria-live="polite">
+                      Exporta cuando necesites cerrar o enviar caja.
+                    </p>
+                  </form>
+                </section>
+
+                <section class="subpanel">
+                  <div class="cash-summary">
+                    <article class="state-metric">
+                      <span>Total del dia</span>
+                      <strong id="stat-day-total">$ 0</strong>
+                    </article>
+                    <article class="state-metric">
+                      <span>Registros del dia</span>
+                      <strong id="stat-day-count">0</strong>
+                    </article>
+                    <article class="state-metric">
+                      <span>Total semanal</span>
+                      <strong id="stat-week-total">$ 0</strong>
+                    </article>
                   </div>
 
-                  <p class="inline-status" id="cash-status" role="status" aria-live="polite">
-                    Registra efectivo sin salir del flujo principal.
-                  </p>
-                  <p class="provider-note" id="export-status" role="status" aria-live="polite">
-                    Exporta cuando necesites cerrar o enviar caja.
-                  </p>
-                </form>
-              </section>
-
-              <section class="subpanel">
-                <div class="cash-summary">
-                  <article class="state-metric">
-                    <span>Total del dia</span>
-                    <strong id="stat-day-total">$ 0</strong>
-                  </article>
-                  <article class="state-metric">
-                    <span>Registros del dia</span>
-                    <strong id="stat-day-count">0</strong>
-                  </article>
-                  <article class="state-metric">
-                    <span>Total semanal</span>
-                    <strong id="stat-week-total">$ 0</strong>
-                  </article>
-                </div>
-
-                <div class="entry-list" id="cash-list" aria-live="polite"></div>
-              </section>
-            </div>
-          </article>
+                  <div class="entry-list" id="cash-list" aria-live="polite"></div>
+                </section>
+              </div>
+            </article>
+          </details>
         </section>
       </main>
     </div>
