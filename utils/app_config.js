@@ -21,7 +21,7 @@ export const APP_CONFIG = {
     [-67.98, -38.87],
   ],
   geocodeBBox: [-68.18, -39.03, -67.98, -38.87],
-  mapStyleUrl: "https://tiles.openfreemap.org/styles/dark",
+  mapStyleUrl: "https://tiles.openfreemap.org/styles/positron",
   storageKeys: {
     destinationHistory: "riderMaps.destinationHistory.v3",
     lastStrategy: "riderMaps.lastStrategy.v2",
