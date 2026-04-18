@@ -1598,6 +1598,11 @@ textarea:focus-visible {
   padding-inline: 0.2rem;
 }
 
+.app-header .status-pill,
+.map-glance {
+  display: none;
+}
+
 .brand-row {
   align-items: center;
 }
@@ -1754,6 +1759,7 @@ textarea:focus-visible {
   color: #2e3d4d;
   border-color: rgba(24, 35, 48, 0.08);
   box-shadow: 0 12px 24px rgba(10, 18, 27, 0.08);
+  white-space: nowrap;
 }
 
 .search-inline-status {

@@ -71,6 +71,7 @@ export const APP_CONFIG = {
   trackingPointSpacingMeters: 18,
   trackingPathLimit: 80,
   trackingSessionSaveDebounceMs: 1200,
+  trackingSessionSaveMinIntervalMs: 5500,
   trackingMinAccuracyMeters: 120,
   followUserCameraMinMoveMeters: 10,
   followUserCameraDebounceMs: 900,
