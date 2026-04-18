@@ -100,7 +100,7 @@ async function getOrsRoute({ origin, destination, strategy, apiKey }) {
       [origin.lng, origin.lat],
       [destination.lng, destination.lat],
     ],
-    instructions: false,
+    instructions: true,
     units: "m",
     elevation: false,
     options: {},
@@ -137,6 +137,7 @@ async function getOrsRoute({ origin, destination, strategy, apiKey }) {
     geometry: feature.geometry,
     distanceMeters: Number(feature.properties?.summary?.distance || 0),
     durationSeconds: Number(feature.properties?.summary?.duration || 0),
+    guidanceSteps: normalizeOrsGuidanceSteps(feature),
     raw: feature,
   }));
 
@@ -156,7 +157,7 @@ async function getOsrmRouteSet({ origin, destination }) {
   url.searchParams.set("alternatives", "true");
   url.searchParams.set("overview", "full");
   url.searchParams.set("geometries", "geojson");
-  url.searchParams.set("steps", "false");
+  url.searchParams.set("steps", "true");
 
   const response = await fetch(url.toString());
 
@@ -179,6 +180,7 @@ async function getOsrmRouteSet({ origin, destination }) {
     },
     distanceMeters: Number(route.distance || 0),
     durationSeconds: Number(route.duration || 0),
+    guidanceSteps: normalizeOsrmGuidanceSteps(route),
     raw: route,
     strategy: "balanced",
     availableStrategies: [...APP_CONFIG.strategyOrder],
@@ -259,6 +261,128 @@ function buildProviderNote({ provider, strategies, routeCount, note }) {
       : strategies.map((strategy) => mapStrategyLabel(strategy)).join(", ");
 
   return `Provider: ${provider} | ${routeCount} ruta${routeCount === 1 ? "" : "s"} real${routeCount === 1 ? "" : "es"} | cobertura ${coverage} | ${note}`;
+}
+
+function normalizeOsrmGuidanceSteps(route) {
+  const steps = (route.legs || []).flatMap((leg) => leg.steps || []);
+
+  return steps.map((step, index) => ({
+    index,
+    maneuverType: mapOsrmManeuverType(step.maneuver?.type, step.maneuver?.modifier),
+    modifier: String(step.maneuver?.modifier || "").trim(),
+    streetName: String(step.name || step.ref || "").trim(),
+    distanceMeters: Number(step.distance || 0),
+    durationSeconds: Number(step.duration || 0),
+    coordinate: Array.isArray(step.maneuver?.location)
+      ? {
+          lng: Number(step.maneuver.location[0]),
+          lat: Number(step.maneuver.location[1]),
+        }
+      : null,
+    instruction: "",
+  }));
+}
+
+function normalizeOrsGuidanceSteps(feature) {
+  const coordinates = feature?.geometry?.type === "LineString"
+    ? feature.geometry.coordinates || []
+    : [];
+  const steps = (feature?.properties?.segments || []).flatMap((segment) => segment.steps || []);
+
+  return steps.map((step, index) => {
+    const geometryIndex = Array.isArray(step.way_points) ? Number(step.way_points[0]) : -1;
+    const coordinate = coordinates[geometryIndex];
+
+    return {
+      index,
+      maneuverType: mapOrsManeuverType(step.type),
+      modifier: "",
+      streetName: String(step.name || "").trim(),
+      distanceMeters: Number(step.distance || 0),
+      durationSeconds: Number(step.duration || 0),
+      coordinate: Array.isArray(coordinate)
+        ? {
+            lng: Number(coordinate[0]),
+            lat: Number(coordinate[1]),
+          }
+        : null,
+      geometryIndex: geometryIndex >= 0 ? geometryIndex : null,
+      instruction: String(step.instruction || "").trim(),
+    };
+  });
+}
+
+function mapOsrmManeuverType(type, modifier) {
+  const safeType = String(type || "").trim().toLowerCase();
+  const safeModifier = String(modifier || "").trim().toLowerCase();
+
+  if (safeType === "arrive") {
+    return "arrive";
+  }
+
+  if (safeModifier === "left" || safeModifier === "sharp left") {
+    return "left";
+  }
+
+  if (safeModifier === "right" || safeModifier === "sharp right") {
+    return "right";
+  }
+
+  if (safeModifier === "slight left") {
+    return "slight-left";
+  }
+
+  if (safeModifier === "slight right") {
+    return "slight-right";
+  }
+
+  if (safeModifier === "straight") {
+    return "continue";
+  }
+
+  if (safeType === "depart") {
+    return "continue";
+  }
+
+  if (safeType === "new name" || safeType === "continue" || safeType === "merge") {
+    return "continue";
+  }
+
+  return safeType || "continue";
+}
+
+function mapOrsManeuverType(typeCode) {
+  const safeType = Number(typeCode);
+
+  if (safeType === 0 || safeType === 2) {
+    return "left";
+  }
+
+  if (safeType === 1 || safeType === 3) {
+    return "right";
+  }
+
+  if (safeType === 4 || safeType === 12) {
+    return "slight-left";
+  }
+
+  if (safeType === 5 || safeType === 13) {
+    return "slight-right";
+  }
+
+  if (safeType === 10) {
+    return "arrive";
+  }
+
+  if (safeType === 11 || safeType === 6) {
+    return "continue";
+  }
+
+  if (safeType === 9) {
+    return "uturn";
+  }
+
+  return "continue";
 }
 
 function mapStrategyLabel(strategy) {

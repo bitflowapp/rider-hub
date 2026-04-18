@@ -1,4 +1,4 @@
-import { getActiveEngine } from "./engine/engine.js";
+﻿import { getActiveEngine } from "./engine/engine.js";
 import { getPlaceMemoryTagLabel } from "./data/place_memory_schema.js";
 import { exportCashEntriesExcel, exportCashEntriesPdf } from "./services/export_service.js";
 import { geocodeAddress, reverseGeocode } from "./services/geocoding_service.js";
@@ -13,6 +13,7 @@ import {
   updateUserLocation,
 } from "./services/live_navigation_service.js";
 import { createMapService } from "./services/map_service.js";
+import { buildRouteGuidance, getCurrentGuidanceState } from "./services/navigation_guidance_service.js";
 import {
   buildPlaceMemoryEntry,
   getPlaceMemories,
@@ -133,6 +134,9 @@ const elements = {
   navigationHudState: document.querySelector("#navigation-hud-state"),
   navigationHudTitle: document.querySelector("#navigation-hud-title"),
   navigationHudCopy: document.querySelector("#navigation-hud-copy"),
+  navigationCurrentStreet: document.querySelector("#navigation-current-street"),
+  navigationNextReference: document.querySelector("#navigation-next-reference"),
+  navigationManeuverDistance: document.querySelector("#navigation-maneuver-distance"),
   navigationRemainingTime: document.querySelector("#navigation-remaining-time"),
   navigationRemainingDistance: document.querySelector("#navigation-remaining-distance"),
   navigationProgressPill: document.querySelector("#navigation-progress-pill"),
@@ -222,8 +226,8 @@ async function init() {
   restoreRecoveredState();
   elements.cashDateTime.value = getDateTimeLocalValue();
   elements.addressInput.value = state.lastSearchInput || compactDestinationLabel(state.destination?.label || "");
-  elements.searchBarIcon.textContent = "⌕";
-  elements.clearAddressButton.textContent = "×";
+  elements.searchBarIcon.textContent = "âŒ•";
+  elements.clearAddressButton.textContent = "Ã—";
   elements.useLocationButton.textContent = "Usar origen actual";
 
   bindEvents();
@@ -1034,6 +1038,18 @@ function getNavigationHudInset() {
 function renderNavigationHud(uiState, activeRoute) {
   const activeTrip = state.activeTrip;
   const snapshot = activeTrip?.navigationSnapshot || computeNavigationSnapshot(activeRoute, activeTrip?.currentLocation);
+  const guidanceState =
+    activeTrip && activeRoute
+      ? getCurrentGuidanceState({
+          route: activeRoute,
+          currentPosition: activeTrip.currentLocation,
+          destinationProfile: state.destinationProfile,
+          offRoute: Boolean(state.deviationAlert),
+          recalculating: state.routeRecalcInProgress,
+          recalcFailed: Boolean(state.routeRecalcFailure),
+          deviationAlert: state.deviationAlert,
+        })
+      : null;
   const stageTone =
     uiState.modeStage === "off-route"
       ? "warning"
@@ -1060,17 +1076,19 @@ function renderNavigationHud(uiState, activeRoute) {
       ? formatDistance(activeRoute.distanceMeters)
       : "Sin dato";
   const title = activeTrip
-    ? `Hacia ${compactDestinationLabel(state.destination?.label || state.lastSearchInput || "destino")}`
+    ? guidanceState?.instruction || `Hacia ${compactDestinationLabel(state.destination?.label || state.lastSearchInput || "destino")}`
     : activeRoute
       ? `${buildStrategyLabel(activeRoute.displayStrategy || activeRoute.strategy)} lista para salir`
       : "Listo para navegar";
   const progressText = activeTrip
-    ? `${Math.round(progressRatio * 100)}% hecho`
+    ? `${Math.round(progressRatio * 100)}% hecho${
+        guidanceState?.maneuversRemaining ? ` · ${guidanceState.maneuversRemaining} maniobra${guidanceState.maneuversRemaining === 1 ? "" : "s"}` : ""
+      }`
     : activeRoute
       ? "Lista para salir"
       : "En preparacion";
   const copy = activeTrip
-    ? activeTrip.liveGuidance || buildNavigationReference()
+    ? guidanceState?.secondaryInstruction || activeTrip.liveGuidance || buildNavigationReference()
     : activeRoute?.recommendation || activeRoute?.baseSummary || "Busca una ruta para activar la navegacion.";
 
   elements.navigationHud.hidden = !activeTrip;
@@ -1078,6 +1096,7 @@ function renderNavigationHud(uiState, activeRoute) {
   elements.navigationHudState.className = `tiny-pill is-${stageTone}`;
   elements.navigationHudTitle.textContent = title;
   elements.navigationHudCopy.textContent = copy;
+  renderNavigationGuidanceStrip(guidanceState);
   elements.navigationRemainingTime.textContent = remainingDurationLabel;
   elements.navigationRemainingDistance.textContent = remainingDistanceLabel;
   elements.navigationProgressPill.textContent = progressText;
@@ -1089,6 +1108,23 @@ function renderNavigationHud(uiState, activeRoute) {
   elements.pauseNavigationButton.disabled = !activeTrip;
   elements.pauseNavigationButton.textContent = activeTrip?.liveLocationPaused ? "Reanudar" : "Pausar";
   elements.finishNavigationButton.disabled = !activeTrip;
+}
+
+function renderNavigationGuidanceStrip(guidanceState) {
+  const stripItems = [
+    [elements.navigationCurrentStreet, guidanceState?.currentStreetLabel || ""],
+    [elements.navigationNextReference, guidanceState?.nextReferenceLabel || ""],
+    [elements.navigationManeuverDistance, guidanceState?.distanceToManeuverLabel || ""],
+  ];
+
+  stripItems.forEach(([node, text]) => {
+    if (!node) {
+      return;
+    }
+
+    node.hidden = !text;
+    node.textContent = text;
+  });
 }
 
 function buildNavigationReference() {
@@ -1902,7 +1938,7 @@ function refreshPlaceMemoryContext(shouldResetDraft = true) {
 function applyRouteLearning(routes) {
   const previousActiveRouteId = state.activeTrip ? state.activeRouteId : "";
   const intelligence = rankRoutesWithMemory({
-    routes,
+    routes: enrichRoutesWithGuidance(routes),
     destinationProfile: state.destinationProfile,
     preferredStrategy: state.selectedStrategy,
     hourContext: getHourContext(),
@@ -2773,6 +2809,25 @@ function getNextAlternativeRoute() {
   return sortedRoutes[nextIndex] || null;
 }
 
+function enrichRoutesWithGuidance(routes) {
+  if (!Array.isArray(routes)) {
+    return [];
+  }
+
+  return routes.map((route) => enrichRouteWithGuidance(route)).filter(Boolean);
+}
+
+function enrichRouteWithGuidance(route) {
+  if (!route) {
+    return null;
+  }
+
+  return {
+    ...route,
+    guidance: route.guidance || buildRouteGuidance(route),
+  };
+}
+
 function buildCompactRouteLabel(route) {
   if (!route) {
     return "otra ruta";
@@ -2811,7 +2866,7 @@ function restoreStableRouting(snapshot) {
     return false;
   }
 
-  state.routes = snapshot.routes.map((route) => ({ ...route }));
+  state.routes = enrichRoutesWithGuidance(snapshot.routes);
   state.activeRouteId = snapshot.activeRouteId || snapshot.routes[0]?.id || "";
   state.recommendedRouteId = snapshot.recommendedRouteId || snapshot.routes[0]?.id || "";
   state.activeProvider = snapshot.activeProvider || state.activeProvider;
@@ -2986,7 +3041,7 @@ function restoreRecoveredState() {
     state.origin = session.origin || state.origin;
     state.destination = session.destination;
     state.addressAnalysis = session.addressAnalysis;
-    state.routes = Array.isArray(session.routes) ? session.routes : [];
+    state.routes = enrichRoutesWithGuidance(Array.isArray(session.routes) ? session.routes : []);
     state.activeRouteId = session.activeRouteId || "";
     state.recommendedRouteId = session.recommendedRouteId || "";
     state.activeProvider = session.activeProvider || "";
@@ -3238,3 +3293,4 @@ function registerServiceWorker() {
     }
   });
 }
+

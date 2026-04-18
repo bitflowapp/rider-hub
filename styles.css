@@ -489,6 +489,12 @@ textarea:focus-visible {
   min-width: 0;
 }
 
+.navigation-guidance-strip {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.45rem;
+}
+
 #navigation-hud-title {
   display: block;
   color: #1e2732;
@@ -510,6 +516,12 @@ textarea:focus-visible {
   background: rgba(19, 29, 42, 0.08);
   border-color: rgba(18, 28, 40, 0.08);
   color: #324658;
+  max-width: 100%;
+}
+
+.navigation-guidance-strip .tiny-pill {
+  justify-content: flex-start;
+  padding-inline: 0.72rem;
 }
 
 .navigation-hud .tiny-pill.is-danger {
