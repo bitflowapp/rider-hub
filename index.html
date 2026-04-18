@@ -27,60 +27,50 @@
     <div class="app-shell">
       <header class="app-header">
         <div class="brand-block">
-          <p class="eyebrow">Neuquen Capital | bici | rider-first</p>
+          <p class="eyebrow">Neuquen Capital | navegacion rider</p>
           <div class="brand-row">
             <h1>Rider Maps Neuquen</h1>
             <span class="status-pill is-neutral" id="app-status-pill">Esperando</span>
           </div>
-          <p class="brand-copy">
-            Destino claro. Riesgo visible. Siguiente paso obvio.
-          </p>
-        </div>
-
-        <div class="header-actions">
-          <button class="mini-button" id="jump-history-button" type="button">Historial</button>
-          <button class="mini-button" id="jump-cash-button" type="button">Caja</button>
         </div>
       </header>
 
       <main class="main-layout">
         <section class="primary-layout">
           <article class="command-dock">
-            <div class="dock-head">
-              <div>
-                <p class="section-kicker">Destino</p>
-                <h2>Direccion y estrategia</h2>
+            <div class="search-panel">
+              <div class="search-bar-shell">
+                <span class="search-bar-icon" aria-hidden="true">⌕</span>
+                <label class="sr-only" for="address-input">Direccion del cliente</label>
+                <textarea
+                  id="address-input"
+                  class="address-input search-address-input"
+                  rows="1"
+                  placeholder="Buscar direccion en Neuquen Capital"
+                  autocomplete="street-address"
+                  spellcheck="false"
+                ></textarea>
+                <div class="search-bar-actions">
+                  <button class="icon-button" id="clear-address-button" type="button" aria-label="Limpiar direccion">
+                    ×
+                  </button>
+                  <button class="icon-button icon-button-accent" id="search-address-button" type="button" aria-label="Buscar direccion">
+                    Ir
+                  </button>
+                </div>
               </div>
-              <div class="utility-row">
-                <button class="mini-button" id="paste-address-button" type="button">Pegar</button>
-                <button class="mini-button" id="use-location-button" type="button">Ubicarme</button>
+
+              <div class="search-action-row">
+                <button class="mini-button search-chip" id="paste-address-button" type="button">Pegar</button>
+                <button class="mini-button search-chip" id="use-location-button" type="button">Mi ubicacion</button>
+                <button class="mini-button search-chip" id="jump-history-button" type="button">Historial</button>
+                <button class="mini-button search-chip" id="jump-cash-button" type="button">Caja</button>
               </div>
-            </div>
 
-            <div class="address-row">
-              <label class="sr-only" for="address-input">Direccion del cliente</label>
-              <textarea
-                id="address-input"
-                class="address-input"
-                rows="1"
-                placeholder="Ej.: Mendoza 850"
-                autocomplete="street-address"
-                spellcheck="false"
-              ></textarea>
-              <button class="button button-primary" id="search-address-button" type="button">
-                Buscar
-              </button>
+              <p class="inline-status search-inline-status" id="map-status" role="status" aria-live="polite">
+                Pega o busca una direccion para empezar.
+              </p>
             </div>
-
-            <div class="strategy-switch" role="tablist" aria-label="Estrategia de ruta">
-              <button class="strategy-button" type="button" data-strategy="fast">Rapida</button>
-              <button class="strategy-button" type="button" data-strategy="balanced">Equilibrada</button>
-              <button class="strategy-button" type="button" data-strategy="cautious">Prudente</button>
-            </div>
-
-            <p class="inline-status" id="map-status" role="status" aria-live="polite">
-              Esperando una direccion para interpretar y rutear.
-            </p>
           </article>
 
           <section class="map-stage" aria-label="Mapa principal">
@@ -143,9 +133,10 @@
 
           <section class="decision-panel">
             <article class="state-card">
+              <div class="sheet-grabber" aria-hidden="true"></div>
               <div class="state-topline">
                 <div>
-                  <p class="mini-label">Direccion interpretada</p>
+                  <p class="mini-label">Direccion entendida</p>
                   <strong id="interpreted-address">Esperando direccion</strong>
                 </div>
                 <span class="status-pill is-neutral" id="address-state-badge">Esperando</span>
@@ -200,6 +191,12 @@
                   <span>Historial</span>
                   <strong id="route-history-summary">Sin experiencia</strong>
                 </article>
+              </div>
+
+              <div class="strategy-switch" role="tablist" aria-label="Estrategia de ruta">
+                <button class="strategy-button" type="button" data-strategy="fast">Rapida</button>
+                <button class="strategy-button" type="button" data-strategy="balanced">Equilibrada</button>
+                <button class="strategy-button" type="button" data-strategy="cautious">Prudente</button>
               </div>
 
               <div class="trip-strip" id="trip-strip" hidden>
@@ -483,7 +480,7 @@
         <div class="trip-sheet-head">
           <div>
             <p class="section-kicker">Cierre breve</p>
-            <h2>¿Como salio este viaje?</h2>
+            <h2>Como salio este viaje?</h2>
           </div>
           <button class="mini-button" id="dismiss-trip-dialog-button" type="button">Cerrar</button>
         </div>

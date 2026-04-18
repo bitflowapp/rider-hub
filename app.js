@@ -111,6 +111,7 @@ const elements = {
   layoutDrawers: Array.from(document.querySelectorAll(".insight-drawer, .secondary-drawer")),
   addressInput: document.querySelector("#address-input"),
   pasteAddressButton: document.querySelector("#paste-address-button"),
+  clearAddressButton: document.querySelector("#clear-address-button"),
   searchAddressButton: document.querySelector("#search-address-button"),
   useLocationButton: document.querySelector("#use-location-button"),
   primaryActionButton: document.querySelector("#primary-action-button"),
@@ -135,7 +136,10 @@ const elements = {
   finishNavigationButton: document.querySelector("#finish-navigation-button"),
   interpretedAddress: document.querySelector("#interpreted-address"),
   addressStateBadge: document.querySelector("#address-state-badge"),
+  modeStrip: document.querySelector("#mode-strip"),
   modeChips: Array.from(document.querySelectorAll("[data-trip-stage]")),
+  stateGrid: document.querySelector(".state-grid"),
+  routeOverview: document.querySelector(".route-overview"),
   resolutionStatus: document.querySelector("#resolution-status"),
   operationalRisk: document.querySelector("#operational-risk"),
   recommendedRoute: document.querySelector("#recommended-route"),
@@ -151,6 +155,11 @@ const elements = {
   routeHistoryDetail: document.querySelector("#route-history-detail"),
   routeWhy: document.querySelector("#route-why"),
   routeProviderNote: document.querySelector("#route-provider-note"),
+  routeInsightsDrawer: document.querySelector("#route-insights"),
+  placeMemoryDrawer: document.querySelector("#place-memory-drawer"),
+  routeContext: document.querySelector(".route-context"),
+  strategySwitch: document.querySelector(".strategy-switch"),
+  bottomActionBar: document.querySelector(".bottom-action-bar"),
   tripStrip: document.querySelector("#trip-strip"),
   tripStatusTitle: document.querySelector("#trip-status-title"),
   tripStatusCopy: document.querySelector("#trip-status-copy"),
@@ -230,7 +239,7 @@ async function init() {
 
     syncMapLayers();
     scheduleMapResizeBurst();
-    setInlineStatus(elements.mapStatus, "Mapa listo. Busca un destino dentro de Neuquen Capital.", "success");
+    setInlineStatus(elements.mapStatus, "Mapa listo. Pega o busca una direccion.", "success");
 
     if (state.activeTrip) {
       resumeRecoveredTrip();
@@ -292,12 +301,18 @@ function bindEvents() {
     }
   });
 
+  elements.addressInput.addEventListener("input", () => {
+    elements.clearAddressButton.disabled =
+      !elements.addressInput.value.trim() && !state.destination && !state.lastSearchInput;
+  });
+
   elements.placeMemoryNoteInput.addEventListener("input", () => {
     state.placeMemoryDraft.note = elements.placeMemoryNoteInput.value.trim();
     renderPlaceMemoryComposer();
   });
 
   elements.pasteAddressButton.addEventListener("click", handlePasteAddress);
+  elements.clearAddressButton.addEventListener("click", handleClearAddress);
   elements.searchAddressButton.addEventListener("click", handleSearchAddress);
   elements.useLocationButton.addEventListener("click", handleUseCurrentLocation);
   elements.primaryActionButton.addEventListener("click", handlePrimaryAction);
@@ -534,6 +549,43 @@ async function handleUseCurrentLocation() {
       maximumAge: 30000,
     }
   );
+}
+
+function handleClearAddress() {
+  if (state.activeTrip) {
+    const message = "Finaliza el viaje actual antes de limpiar el destino.";
+    setInlineStatus(elements.mapStatus, message, "warning");
+    showToast(message, "warning");
+    return;
+  }
+
+  if (state.pendingTripReview) {
+    const message = "Cierra el viaje pendiente antes de limpiar la busqueda.";
+    setInlineStatus(elements.mapStatus, message, "warning");
+    showToast(message, "warning");
+    return;
+  }
+
+  elements.addressInput.value = "";
+  state.lastSearchInput = "";
+  state.destination = null;
+  state.addressAnalysis = null;
+  state.routes = [];
+  state.activeRouteId = "";
+  state.recommendedRouteId = "";
+  state.activeProvider = "";
+  state.activeProviderNote = "";
+  state.destinationProfile = null;
+  state.destinationMemorySummary = null;
+  state.placeMemorySummary = null;
+  state.placeMemoryDraft = { tags: [], note: "" };
+  state.routeError = "";
+  clearDeviationAlert();
+  writeJsonStorage(APP_CONFIG.storageKeys.lastResolvedAddress, null);
+  syncMapLayers();
+  renderOperationalPanel();
+  setInlineStatus(elements.mapStatus, "Busqueda limpia. Pega o busca una direccion.", "success");
+  scheduleSessionSave();
 }
 
 async function recalculateRouteForCurrentDestination(source, originOverride = null) {
@@ -932,7 +984,7 @@ function maybeFollowUserOnMap(currentPoint) {
 }
 
 function getNavigationHudInset() {
-  const shouldReserveSpace = Boolean(getActiveRoute() || state.activeTrip);
+  const shouldReserveSpace = Boolean(state.activeTrip);
 
   if (!shouldReserveSpace) {
     return 0;
@@ -989,7 +1041,7 @@ function renderNavigationHud(uiState, activeRoute) {
     ? activeTrip.liveGuidance || buildNavigationReference()
     : activeRoute?.recommendation || activeRoute?.baseSummary || "Busca una ruta para activar la navegacion.";
 
-  elements.navigationHud.hidden = !activeRoute && !activeTrip;
+  elements.navigationHud.hidden = !activeTrip;
   elements.navigationHudState.textContent = buildNavigationStateLabel(uiState.modeStage, activeTrip?.liveLocationPaused);
   elements.navigationHudState.className = `tiny-pill is-${stageTone}`;
   elements.navigationHudTitle.textContent = title;
@@ -1042,6 +1094,15 @@ function buildNavigationStateLabel(stage, isPaused = false) {
 function renderOperationalPanel() {
   const uiState = deriveUiState();
   const activeRoute = getActiveRoute();
+  const isNavigationActive = Boolean(state.activeTrip);
+  const isDecisionStage = Boolean(activeRoute) && !isNavigationActive && !state.pendingTripReview;
+  const tripLiveMetricCard = elements.tripLiveDuration.closest(".overview-metric");
+  const routeHistoryMetricCard = elements.routeHistorySummary.closest(".overview-metric");
+  const canShowAlternative =
+    !state.activeTrip &&
+    !state.pendingTripReview &&
+    getAlternativeRoutes(state.routes, state.activeRouteId).length > 0;
+  const canOpenExternal = false;
   const navigationSnapshot =
     state.activeTrip?.navigationSnapshot || computeNavigationSnapshot(activeRoute, state.activeTrip?.currentLocation);
   const elapsedSeconds = state.activeTrip ? getElapsedTripSeconds(state.activeTrip) : 0;
@@ -1065,6 +1126,8 @@ function renderOperationalPanel() {
   elements.tripLiveDuration.textContent = state.activeTrip ? formatDuration(elapsedSeconds) : "Sin seguimiento";
   elements.routeHistorySummary.textContent =
     activeRoute?.historyLabel || state.destinationMemorySummary?.label || "Sin experiencia";
+  tripLiveMetricCard.hidden = !state.activeTrip;
+  routeHistoryMetricCard.hidden = !state.activeTrip;
   elements.originSummary.textContent = buildOriginCopy();
   elements.routeReliability.textContent = activeRoute
     ? `Confiabilidad ${formatReliabilityLabel(activeRoute.historyMetrics?.reliabilityScore || 0.5)}`
@@ -1073,9 +1136,10 @@ function renderOperationalPanel() {
     activeRoute?.historyDetail ||
     state.destinationMemorySummary?.detail ||
     "Sin experiencia previa suficiente para darle peso fuerte a la memoria.";
-  elements.routeWhy.textContent = activeRoute?.recommendation || activeRoute?.baseSummary || state.routeError || "Todavia no hay una ruta activa.";
+  elements.routeWhy.textContent =
+    activeRoute?.recommendation || activeRoute?.baseSummary || state.routeError || "Todavia no hay una ruta activa.";
   elements.routeProviderNote.textContent = state.activeProviderNote || buildProviderLabel(state.activeProvider);
-  elements.tripStrip.hidden = !state.activeTrip;
+  elements.tripStrip.hidden = true;
   elements.tripStatusTitle.textContent = state.activeTrip
     ? `Navegando hacia ${compactDestinationLabel(state.destination?.label || state.lastSearchInput || "destino")}`
     : "Sin viaje activo";
@@ -1101,9 +1165,20 @@ function renderOperationalPanel() {
 
   elements.primaryActionButton.textContent = uiState.primaryActionLabel;
   elements.primaryActionButton.disabled = uiState.primaryActionDisabled;
-  elements.showAlternativeButton.disabled =
-    state.activeTrip || state.pendingTripReview || getAlternativeRoutes(state.routes, state.activeRouteId).length === 0;
-  elements.openExternalNavButton.disabled = !state.destination || Boolean(state.pendingTripReview);
+  elements.showAlternativeButton.hidden = !canShowAlternative;
+  elements.showAlternativeButton.disabled = !canShowAlternative;
+  elements.openExternalNavButton.hidden = !canOpenExternal;
+  elements.openExternalNavButton.disabled = !canOpenExternal;
+  elements.bottomActionBar.hidden = isNavigationActive;
+  elements.modeStrip.hidden = true;
+  elements.stateGrid.hidden = true;
+  elements.routeOverview.hidden = !isDecisionStage;
+  elements.routeInsightsDrawer.hidden = true;
+  elements.placeMemoryDrawer.hidden = !state.destinationProfile || isNavigationActive;
+  elements.routeContext.hidden = true;
+  elements.strategySwitch.hidden = isNavigationActive || Boolean(state.pendingTripReview) || !state.destination;
+  elements.reasonList.hidden = true;
+  elements.clearAddressButton.disabled = !elements.addressInput.value.trim() && !state.destination && !state.lastSearchInput;
 
   elements.feedbackButtons.forEach((button) => {
     button.disabled = !activeRoute || Boolean(state.pendingTripReview);
@@ -1136,17 +1211,16 @@ function deriveUiState() {
       : suggestedLabel;
   const hasSuggestedAlternative = Boolean(suggestedRoute && activeRoute && suggestedRoute.id !== activeRoute.id);
   const base = {
-    headerBadge: "Esperando",
+    headerBadge: "Sin destino",
     addressBadge: "Esperando",
     badgeTone: "neutral",
     modeStage: "waiting",
-    resolutionStatus: "Esperando direccion",
+    resolutionStatus: "Sin direccion",
     operationalRisk: "Sin evaluar",
-    recommendedRoute: "Todavia no calculada",
-    recommendationTitle: "Pega una direccion para empezar",
-    recommendationCopy:
-      "Voy a limpiarla, validar Neuquen Capital y sugerirte la mejor ruta para salir rapido.",
-    primaryActionLabel: "Buscar destino",
+    recommendedRoute: "Sin ruta",
+    recommendationTitle: "Pega o busca una direccion",
+    recommendationCopy: "Cuando la valide, te voy a mostrar una sola accion clara.",
+    primaryActionLabel: "Buscar direccion",
     primaryActionKind: "search",
     primaryActionDisabled: state.isBusy,
   };
@@ -1160,7 +1234,7 @@ function deriveUiState() {
       resolutionStatus: "Interpretando direccion",
       recommendedRoute: "Calculando",
       recommendationTitle: "Interpretando direccion",
-      recommendationCopy: state.addressAnalysis?.reason || "Limpio el texto y valido la ciudad.",
+      recommendationCopy: state.addressAnalysis?.reason || "Validando Neuquen Capital.",
     };
   }
 
@@ -1172,8 +1246,8 @@ function deriveUiState() {
       badgeTone: "danger",
       modeStage: "waiting",
       resolutionStatus: "Fuera de Neuquen Capital",
-      recommendationTitle: "Direccion fuera de alcance",
-      recommendationCopy: state.addressAnalysis?.reason || "Solo se aceptan destinos dentro de Neuquen Capital.",
+      recommendationTitle: "Direccion fuera de Neuquen Capital",
+      recommendationCopy: state.addressAnalysis?.reason || "Revisa la calle o pega otra direccion.",
       primaryActionLabel: "Revisar direccion",
       primaryActionKind: "review",
       primaryActionDisabled: false,
@@ -1188,9 +1262,8 @@ function deriveUiState() {
       badgeTone: "warning",
       modeStage: "waiting",
       resolutionStatus: "Direccion dudosa",
-      recommendationTitle: "Direccion necesita revision",
-      recommendationCopy:
-        state.addressAnalysis?.reason || "No pude validarla con suficiente confianza. Conviene revisar antes de salir.",
+      recommendationTitle: "No pude validar esta calle",
+      recommendationCopy: state.addressAnalysis?.reason || "Revisa la direccion antes de salir.",
       primaryActionLabel: "Revisar direccion",
       primaryActionKind: "review",
       primaryActionDisabled: false,
@@ -1206,10 +1279,9 @@ function deriveUiState() {
       modeStage: "waiting",
       resolutionStatus: "Direccion valida",
       recommendedRoute: `${buildStrategyLabel(state.selectedStrategy)} pendiente`,
-      recommendationTitle: "Destino validado",
-      recommendationCopy:
-        state.routeError || "La direccion esta bien interpretada. Falta resolver la mejor ruta.",
-      primaryActionLabel: "Buscar ruta sugerida",
+      recommendationTitle: "Direccion valida en Neuquen Capital",
+      recommendationCopy: state.routeError || "Ahora puedo calcular la mejor ruta.",
+      primaryActionLabel: "Calcular ruta",
       primaryActionKind: "route",
       primaryActionDisabled: false,
     };
@@ -1225,13 +1297,13 @@ function deriveUiState() {
       resolutionStatus: "Recalculando desde tu posicion",
       operationalRisk: activeRoute?.operationalRisk?.overallLabel || "En revision",
       recommendedRoute: currentLabel,
-      recommendationTitle: "Buscando mejor opcion desde donde vas",
+      recommendationTitle: "Recalculando desde tu posicion actual",
       recommendationCopy:
         state.activeTrip?.liveGuidance ||
-        "Estoy evaluando una nueva ruta sin perder el hilo del viaje.",
-      primaryActionLabel: "Finalizar viaje",
+        "Buscando una mejor opcion sin perder el viaje.",
+      primaryActionLabel: "Recalculando...",
       primaryActionKind: "finish-trip",
-      primaryActionDisabled: false,
+      primaryActionDisabled: true,
     };
   }
 
@@ -1245,12 +1317,12 @@ function deriveUiState() {
       resolutionStatus: "Desvio detectado",
       operationalRisk: activeRoute?.operationalRisk?.overallLabel || "Precaucion",
       recommendedRoute: currentLabel,
-      recommendationTitle: "Conviene revisar desde tu posicion actual",
+      recommendationTitle: "Te alejaste de la ruta",
       recommendationCopy:
         state.deviationAlert?.copy ||
         state.activeTrip?.liveGuidance ||
         "Puedo recalcular desde la calle en la que estas ahora.",
-      primaryActionLabel: "Recalcular",
+      primaryActionLabel: "Recalcular ahora",
       primaryActionKind: "recalculate",
       primaryActionDisabled: false,
     };
@@ -1266,12 +1338,10 @@ function deriveUiState() {
       resolutionStatus: state.activeTrip?.liveLocationPaused ? "Seguimiento en pausa" : "Seguimiento activo",
       operationalRisk: activeRoute?.operationalRisk?.overallLabel || "Sin evaluar",
       recommendedRoute: currentLabel,
-      recommendationTitle: "Viaje en curso",
+      recommendationTitle: state.activeTrip?.liveLocationPaused ? "Navegacion en pausa" : "Navegacion activa",
       recommendationCopy:
         state.activeTrip?.liveGuidance ||
-        `Estoy comparando ${formatDuration(
-          activeRoute?.durationSeconds || 0
-        )} estimados contra el tiempo real para aprender de este destino.`,
+        "La app te va acompanando y recalcula si hace falta.",
       primaryActionLabel: "Finalizar viaje",
       primaryActionKind: "finish-trip",
       primaryActionDisabled: false,
@@ -1288,7 +1358,7 @@ function deriveUiState() {
       resolutionStatus: "Viaje finalizado",
       operationalRisk: activeRoute?.operationalRisk?.overallLabel || "Sin evaluar",
       recommendedRoute: currentLabel,
-      recommendationTitle: "Falta cerrar este viaje",
+      recommendationTitle: "Viaje finalizado",
       recommendationCopy:
         state.pendingTripReview?.delta
           ? `Real ${formatDuration(state.pendingTripReview.actualDurationSeconds)} | ${formatTripDelta(state.pendingTripReview.delta)}`
@@ -1309,14 +1379,14 @@ function deriveUiState() {
       resolutionStatus: "No recomendado de noche",
       operationalRisk: activeRoute?.operationalRisk?.overallLabel || "No recomendado de noche",
       recommendedRoute: suggestedRoute ? suggestedLabel : currentLabel,
-      recommendationTitle: hasSuggestedAlternative ? "Conviene pasar a la sugerida" : "Precaucion nocturna",
+      recommendationTitle: hasSuggestedAlternative ? "Conviene usar la sugerida" : "No recomendado de noche",
       recommendationCopy:
         state.placeMemorySummary?.shouldAvoidAtNight
           ? state.placeMemorySummary.detail
           : suggestedRoute?.recommendation ||
             activeRoute?.operationalRisk?.recommendation ||
             "Conviene bajar exposicion o revisar horario.",
-      primaryActionLabel: hasSuggestedAlternative ? "Usar ruta sugerida" : "Seguir esta ruta",
+      primaryActionLabel: hasSuggestedAlternative ? "Seguir la sugerida" : "Iniciar navegacion",
       primaryActionKind: hasSuggestedAlternative ? "suggested" : "start-trip",
       primaryActionDisabled: false,
     };
@@ -1332,12 +1402,12 @@ function deriveUiState() {
       resolutionStatus: "Ruta con atencion",
       operationalRisk: activeRoute?.operationalRisk?.overallLabel || "Precaucion",
       recommendedRoute: suggestedRoute ? suggestedLabel : currentLabel,
-      recommendationTitle: hasSuggestedAlternative ? "Conviene usar la mejor balanceada" : "Ruta lista con atencion",
+      recommendationTitle: hasSuggestedAlternative ? "Conviene la sugerida" : "Ruta lista con atencion",
       recommendationCopy:
         suggestedRoute?.recommendation ||
         activeRoute?.operationalRisk?.recommendation ||
         "La ruta toca un sector que requiere mas cuidado operativo.",
-      primaryActionLabel: hasSuggestedAlternative ? "Usar ruta sugerida" : "Seguir esta ruta",
+      primaryActionLabel: hasSuggestedAlternative ? "Seguir la sugerida" : "Iniciar navegacion",
       primaryActionKind: hasSuggestedAlternative ? "suggested" : "start-trip",
       primaryActionDisabled: false,
     };
@@ -1353,10 +1423,10 @@ function deriveUiState() {
       resolutionStatus: "Ruta lista",
       operationalRisk: activeRoute?.operationalRisk?.overallLabel || "Normal",
       recommendedRoute: suggestedRoute ? suggestedLabel : currentLabel,
-      recommendationTitle: hasSuggestedAlternative ? `Conviene ${suggestedTitle.toLowerCase()}` : `Ruta ${currentLabel.toLowerCase()} lista`,
+      recommendationTitle: hasSuggestedAlternative ? `Conviene ${suggestedTitle.toLowerCase()}` : "Ruta sugerida lista",
       recommendationCopy:
         suggestedRoute?.recommendation || activeRoute?.recommendation || activeRoute?.baseSummary || "Ruta lista para salir.",
-      primaryActionLabel: hasSuggestedAlternative ? "Usar ruta sugerida" : "Seguir esta ruta",
+      primaryActionLabel: hasSuggestedAlternative ? "Seguir la sugerida" : "Iniciar navegacion",
       primaryActionKind: hasSuggestedAlternative ? "suggested" : "start-trip",
       primaryActionDisabled: false,
     };
